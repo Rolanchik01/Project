@@ -1,0 +1,13 @@
+{
+  "name": "solana-momentum-recorder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Paper-only Stage 0 recorder and deterministic replay for Solana momentum research.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
