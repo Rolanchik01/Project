@@ -1,21 +1,24 @@
-import { AdapterRegistry } from '../src/adapter-contract.js';
-import { EventKind, Venue } from '../src/domain.js';
+# Solana Momentum Recorder — Stage 0
 
-export const version = 'pump-layout-2026-08';
-export const registry = () => new AdapterRegistry().register(Venue.PUMP, version);
+Это **paper-only** основание для momentum-системы: единая модель событий, fail-closed контроль версии протокола, риск-снимок токена и детерминированный replay. В проекте нет загрузки ключей, RPC-вызовов и отправки транзакций.
 
-export const base = (id, slot, kind, payload) => ({
-  id, slot, observedAtNs: String(slot * 1_000), signature: `sig-${slot}`, instructionIndex: 0,
-  venue: Venue.PUMP, programVersion: version, kind, payload: { mint: 'MintA', ...payload },
-});
+## Что уже покрыто
 
-export function confirmedCandidateEvents() {
-  return [
-    base('token', 1, EventKind.TOKEN_CREATED, { creatorClusterId: 'creator', creatorHistoryScore: 0.84 }),
-    base('pool', 2, EventKind.POOL_CREATED, { poolId: 'pool-1', initialLiquidityUsd: 12_000 }),
-    base('holders', 3, EventKind.HOLDER_SNAPSHOT, { holders: [{ clusterId: 'a', share: 0.19 }, { clusterId: 'b', share: 0.13 }] }),
-    base('buy-1', 4, EventKind.BUY, { buyerClusterId: 'smart-a', buyerQuality: 0.91, amountUsd: 3_000 }),
-    base('buy-2', 5, EventKind.BUY, { buyerClusterId: 'smart-b', buyerQuality: 0.88, amountUsd: 2_000 }),
-    base('narrative', 6, EventKind.NARRATIVE_UPDATED, { mentionAcceleration: 0.82, authorsQuality: 0.78, semanticMatch: true, coordinationRisk: 0.08 }),
-  ];
-}
+- Нормализованные события: `TokenCreated`, `MetadataCreated`, `MintTo`, `AuthorityChanged`, `PoolCreated`, `CurveCreated`, `Buy`, `Sell`, `TokenTransfer`, `Graduation`, `Migration`, `LiquidityAdded`, `LiquidityRemoved`, а также `HolderSnapshot` и `NarrativeUpdated`.
+- Снимок после каждого события: `safetyScore`, `creatorScore`, `demandScore`, концентрация держателей, давление продаж, ликвидность на выход и вероятность graduation.
+- Жёсткие стоп-факторы: активные mint/freeze authority, transfer hook/fee и удаление ликвидности.
+- Два входа: `confirmed_entry` для обычного сильного кандидата и уменьшенный `probe_entry` для сильного нарратива с неизвестным создателем.
+- Контракт venue-адаптера с фиксированной версией layout/IDL и автоматическим halt при несовпадении версии.
+- Replay сортирует события по slot, времени наблюдения, signature и instruction index, поэтому одинаковый набор данных даёт одинаковый результат.
+- Скоринговые пороги вынесены в версионируемый `src/scoring-config.js` — сравнение разных наборов порогов не требует правки кода.
+- Дедупликация двух независимых Geyser/Yellowstone-потоков по паре `(venue, signature, instructionIndex)`: `StreamDeduplicator` — для live-приёма (оставляет первую по wall-clock копию), `dedupeEvents` — пакетный дедуп при слиянии уже записанных NDJSON перед replay (оставляет копию с наименьшим `observedAtNs`).
+
+## Запуск проверок
+
+```bash
+npm test
+```
+
+## Границы Stage 0
+
+Числа в скоринге — начальные исследовательские пороги, а не торговая рекомендация и не финальная стратегия. Их можно менять только через версионируемую конфигурацию после walk-forward бэктеста. Следующие этапы: реальный Geyser-recorder, отдельные Pump/PumpSwap-декодеры и сохранение сырых событий в NDJSON/Parquet.
