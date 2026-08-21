@@ -66,6 +66,21 @@ pub enum EventPayload {
         freeze_authority_active: bool,
         transfer_hook: bool,
         transfer_fee_bps: u32,
+        /// A single non-holder wallet can move or burn *any* holder's
+        /// tokens at will — a Token-2022 extension found during Stage 1
+        /// research, not present in the Stage 0 JS reference this module
+        /// was ported from. As dangerous as a transfer hook, so it gates
+        /// the same hard block (see `risk_engine::hard_blocks`).
+        permanent_delegate: bool,
+        /// Token-2022 `NonTransferable` — holders can never move the
+        /// token at all. Also found during Stage 1 research.
+        non_transferable: bool,
+        /// Token-2022 `DefaultAccountState = Frozen` — new holder accounts
+        /// start frozen and need an unfreeze from the freeze authority
+        /// before they can transfer; functionally equivalent to an active
+        /// freeze authority for veto purposes. Also found during Stage 1
+        /// research.
+        default_frozen: bool,
         unsupported_token_program: bool,
     },
     MetadataCreated {
@@ -189,6 +204,9 @@ pub struct TechnicalFlags {
     pub post_launch_mint: bool,
     pub transfer_hook: bool,
     pub transfer_fee_bps: u32,
+    pub permanent_delegate: bool,
+    pub non_transferable: bool,
+    pub default_frozen: bool,
     pub unsupported_token_program: bool,
 }
 

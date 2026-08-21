@@ -61,7 +61,12 @@ fn hard_blocks(token: &TokenState) -> Vec<HardBlock> {
     if token.technical.post_launch_mint {
         blocks.push(HardBlock::PostLaunchMint);
     }
-    if token.technical.transfer_hook || token.technical.transfer_fee_bps > 0 {
+    if token.technical.transfer_hook
+        || token.technical.transfer_fee_bps > 0
+        || token.technical.permanent_delegate
+        || token.technical.non_transferable
+        || token.technical.default_frozen
+    {
         blocks.push(HardBlock::RestrictedTransferMechanism);
     }
     if token.technical.unsupported_token_program {
@@ -241,6 +246,9 @@ pub fn apply_event(replay_state: &mut ReplayState, event: &Event, config: &Scori
             freeze_authority_active,
             transfer_hook,
             transfer_fee_bps,
+            permanent_delegate,
+            non_transferable,
+            default_frozen,
             unsupported_token_program,
         } => {
             token.technical.created = true;
@@ -250,6 +258,9 @@ pub fn apply_event(replay_state: &mut ReplayState, event: &Event, config: &Scori
             token.technical.freeze_authority_active = *freeze_authority_active;
             token.technical.transfer_hook = *transfer_hook;
             token.technical.transfer_fee_bps = *transfer_fee_bps;
+            token.technical.permanent_delegate = *permanent_delegate;
+            token.technical.non_transferable = *non_transferable;
+            token.technical.default_frozen = *default_frozen;
             token.technical.unsupported_token_program = *unsupported_token_program;
         }
         EventPayload::MetadataCreated { social_links } => {

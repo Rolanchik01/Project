@@ -35,6 +35,9 @@ fn a_new_creator_with_a_strong_matched_global_narrative_receives_only_probe_size
                 freeze_authority_active: false,
                 transfer_hook: false,
                 transfer_fee_bps: 0,
+                permanent_delegate: false,
+                non_transferable: false,
+                default_frozen: false,
                 unsupported_token_program: false,
             },
         ),
@@ -67,6 +70,34 @@ fn a_new_creator_with_a_strong_matched_global_narrative_receives_only_probe_size
     let risk = &outcome.timeline.last().unwrap().risk;
     assert_eq!(risk.decision, Decision::ProbeEntry);
     assert_eq!(risk.position_multiplier, 0.2);
+}
+
+#[test]
+fn a_permanent_delegate_extension_rejects_the_token_even_with_no_transfer_hook_or_fee() {
+    // Found during Stage 1 Token-2022 research, not in the Stage 0 JS
+    // reference this domain model was ported from: a permanent delegate
+    // can move or burn any holder's tokens at will, just as dangerous as a
+    // transfer hook, so it must gate the same hard block.
+    let events = vec![base(
+        "token",
+        1,
+        EventPayload::TokenCreated {
+            creator_cluster_id: Some("creator".to_string()),
+            creator_history_score: Some(0.84),
+            mint_authority_active: false,
+            freeze_authority_active: false,
+            transfer_hook: false,
+            transfer_fee_bps: 0,
+            permanent_delegate: true,
+            non_transferable: false,
+            default_frozen: false,
+            unsupported_token_program: false,
+        },
+    )];
+    let outcome = replay(events, &registry()).unwrap();
+    let risk = &outcome.timeline.last().unwrap().risk;
+    assert_eq!(risk.decision, Decision::Reject);
+    assert_eq!(risk.hard_blocks, vec![HardBlock::RestrictedTransferMechanism]);
 }
 
 #[test]
