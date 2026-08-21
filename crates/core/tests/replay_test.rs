@@ -38,6 +38,7 @@ fn a_new_creator_with_a_strong_matched_global_narrative_receives_only_probe_size
                 permanent_delegate: false,
                 non_transferable: false,
                 default_frozen: false,
+                restricted_transfer_mechanism: false,
                 unsupported_token_program: false,
             },
         ),
@@ -77,7 +78,12 @@ fn a_permanent_delegate_extension_rejects_the_token_even_with_no_transfer_hook_o
     // Found during Stage 1 Token-2022 research, not in the Stage 0 JS
     // reference this domain model was ported from: a permanent delegate
     // can move or burn any holder's tokens at will, just as dangerous as a
-    // transfer hook, so it must gate the same hard block.
+    // transfer hook, so it must gate the same hard block. `hard_blocks`
+    // only reads `restricted_transfer_mechanism` (the single derived
+    // field), so this sets it directly the way
+    // `ingest::ingest_pump_token_created` would: computed from the raw
+    // flags via `MintExtensionFlags::has_restricted_transfer_mechanism`,
+    // not re-derived here from `permanent_delegate` alone.
     let events = vec![base(
         "token",
         1,
@@ -91,6 +97,7 @@ fn a_permanent_delegate_extension_rejects_the_token_even_with_no_transfer_hook_o
             permanent_delegate: true,
             non_transferable: false,
             default_frozen: false,
+            restricted_transfer_mechanism: true,
             unsupported_token_program: false,
         },
     )];

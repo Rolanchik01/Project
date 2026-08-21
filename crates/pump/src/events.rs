@@ -145,7 +145,7 @@ impl<'a> Reader<'a> {
     }
 
     fn string(&mut self) -> Option<String> {
-        let len = self.u64_as_u32()?;
+        let len = self.u32()?;
         if self.remaining() < len as usize {
             return None;
         }
@@ -154,7 +154,7 @@ impl<'a> Reader<'a> {
         Some(s)
     }
 
-    fn u64_as_u32(&mut self) -> Option<u32> {
+    fn u32(&mut self) -> Option<u32> {
         if self.remaining() < 4 {
             return None;
         }
@@ -216,7 +216,7 @@ fn decode_trade(body: &[u8]) -> Option<TradeEvent> {
     let _cashback = r.u64()?;
     let _buyback_fee_basis_points = r.u64()?;
     let _buyback_fee = r.u64()?;
-    let shareholders_len = r.u64_as_u32()?;
+    let shareholders_len = r.u32()?;
     // Shareholder payout splits: not used for pricing/scoring, skip over.
     for _ in 0..shareholders_len {
         r.pubkey()?;

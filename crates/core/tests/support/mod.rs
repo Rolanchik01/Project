@@ -39,6 +39,7 @@ pub fn confirmed_candidate_events() -> Vec<Event> {
                 permanent_delegate: false,
                 non_transferable: false,
                 default_frozen: false,
+                restricted_transfer_mechanism: false,
                 unsupported_token_program: false,
             },
         ),

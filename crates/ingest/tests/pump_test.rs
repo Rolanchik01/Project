@@ -72,6 +72,7 @@ fn ingests_a_real_token_created_candidate_with_no_dangerous_extensions_into_a_cl
             permanent_delegate,
             non_transferable,
             default_frozen,
+            restricted_transfer_mechanism,
             unsupported_token_program,
             creator_cluster_id,
             creator_history_score,
@@ -83,6 +84,7 @@ fn ingests_a_real_token_created_candidate_with_no_dangerous_extensions_into_a_cl
             assert!(!*permanent_delegate);
             assert!(!*non_transferable);
             assert!(!*default_frozen);
+            assert!(!*restricted_transfer_mechanism);
             assert!(!*unsupported_token_program);
             assert_eq!(*creator_cluster_id, None);
             assert_eq!(*creator_history_score, None);
@@ -99,19 +101,42 @@ fn ingests_a_real_token_created_candidate_with_no_dangerous_extensions_into_a_cl
     assert!(snapshot.hard_blocks.is_empty());
 }
 
+/// Each dangerous Token-2022 extension, checked one at a time through the
+/// real pipeline (ingest -> domain::Event -> risk_engine), not by asserting
+/// against `has_restricted_transfer_mechanism()`'s own logic in isolation.
+/// `risk_engine::hard_blocks` no longer re-implements this OR-chain itself
+/// (see `domain.rs`'s `restricted_transfer_mechanism` field doc comment for
+/// why that used to be a real gap risk) — it trusts whatever
+/// `ingest_pump_token_created` derived, so this is what actually proves the
+/// two crates agree end to end.
 #[test]
-fn a_permanent_delegate_mint_produces_an_event_the_risk_engine_hard_blocks() {
+fn every_dangerous_token2022_extension_independently_produces_a_hard_blocked_event() {
     use momentum_token2022::MintExtensionFlags;
 
     let adapter = PumpAdapter::new("pump-layout-2026-08");
     let candidate = adapter.decode(&decode_fixture(CREATE_B64)).expect("should decode");
 
-    let dangerous_flags = MintExtensionFlags { permanent_delegate: true, ..MintExtensionFlags::default() };
-    let event = ingest_pump_token_created(&candidate, dangerous_flags, &ctx()).unwrap();
+    let dangerous_variants = [
+        MintExtensionFlags { transfer_hook: true, ..MintExtensionFlags::default() },
+        MintExtensionFlags { transfer_fee_bps: 1, ..MintExtensionFlags::default() },
+        MintExtensionFlags { permanent_delegate: true, ..MintExtensionFlags::default() },
+        MintExtensionFlags { non_transferable: true, ..MintExtensionFlags::default() },
+        MintExtensionFlags { default_frozen: true, ..MintExtensionFlags::default() },
+    ];
 
+    for flags in dangerous_variants {
+        let event = ingest_pump_token_created(&candidate, flags, &ctx()).unwrap();
+        let mut state = ReplayState::new();
+        let snapshot = apply_event(&mut state, &event, &DEFAULT_SCORING_CONFIG);
+        assert_eq!(snapshot.hard_blocks, vec![HardBlock::RestrictedTransferMechanism], "flags {flags:?} should hard-block");
+    }
+
+    // The absence of all five must NOT hard-block on this ground (other
+    // hard blocks don't apply to this fixture either, so the list is empty).
+    let clean_event = ingest_pump_token_created(&candidate, MintExtensionFlags::default(), &ctx()).unwrap();
     let mut state = ReplayState::new();
-    let snapshot = apply_event(&mut state, &event, &DEFAULT_SCORING_CONFIG);
-    assert_eq!(snapshot.hard_blocks, vec![HardBlock::RestrictedTransferMechanism]);
+    let snapshot = apply_event(&mut state, &clean_event, &DEFAULT_SCORING_CONFIG);
+    assert!(snapshot.hard_blocks.is_empty());
 }
 
 #[test]

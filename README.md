@@ -8,7 +8,8 @@
 - `crates/pump` — Pump bonding curve: декодер `BondingCurve` и constant-product quote-математика, сверенные с реальными данными mainnet (см. `crates/pump/src/lib.rs` и `crates/pump/idl/pump.json`).
 - `crates/pumpswap` — PumpSwap AMM: декодер `Pool` и constant-product quote-математика, тоже сверенные с реальными сделками (`crates/pumpswap/idl/pump_amm.json`).
 - `crates/token2022` — проверка опасных расширений Token-2022 (transfer fee/hook, permanent delegate, non-transferable, default-frozen) поверх официального крейта `spl-token-2022`, без ручного разбора TLV.
-- `docs/VENUE_ADAPTER.md` — контракт venue-адаптера (сейчас уже реализуется как настоящий Rust `trait`, не только описание).
+- `crates/ingest` — склеивающий слой над `core`/`pump`/`pumpswap`/`token2022`: собирает decoded `Candidate` + результат инспекции минта в `core::domain::Event`, который уже понимает risk-engine.
+- `docs/VENUE_ADAPTER.md` — контракт venue-адаптера, теперь полностью реализован как Rust `trait` (`crates/core/src/adapter_contract.rs::VenueAdapter`) и используется обоими venue-адаптерами (`crates/pump/src/adapter.rs`, `crates/pumpswap/src/adapter.rs`).
 - `src/`, `test/`, `package.json` — архив: JS-версия Этапа 0, из которой был сделан перенос. Не развивается дальше.
 
 ## Что уже покрыто (`crates/core`)
@@ -40,4 +41,6 @@ cargo test --workspace
 
 ## Границы
 
-Числа в скоринге — начальные исследовательские пороги, а не торговая рекомендация. Их можно менять только через версионируемую конфигурацию после walk-forward бэктеста. Полный `VenueAdapter` trait (decode/apply_update/quote_buy/quote_sell/build_buy/build_sell) сознательно ещё не объявлен в коде — он появится вместе с первым настоящим адаптером (Pump), чтобы его сигнатуры отражали реальные потребности декодирования, а не предположения наперёд. Комиссии Pump/PumpSwap не пересчитываются локально — только читаются из реальных исторических событий при replay (см. выше).
+Числа в скоринге — начальные исследовательские пороги, а не торговая рекомендация. Их можно менять только через версионируемую конфигурацию после walk-forward бэктеста. Комиссии Pump/PumpSwap не пересчитываются локально — только читаются из реальных исторических событий при replay (см. выше).
+
+`crates/ingest` пока умеет собирать только `TokenCreated` (Pump) — безопасность минта проверяется один раз, в момент создания. Если авторитет комиссии/заморозки меняет параметры Token-2022 расширений уже после запуска (например, поднимает `transfer_fee_bps` или включает `DefaultAccountState = Frozen` постфактум), это пока не обнаруживается — нет механизма периодической переинспекции минта уже открытой позиции. Это войдёт в задачу подключения живого потока событий (Dataplane), а не является полным покрытием сейчас. Buy/Sell/PoolCreated ingestion тоже ещё не реализован — им нужна конвертация в USD, источник цены SOL/USD ещё не выбран и не проверен.

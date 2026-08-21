@@ -104,6 +104,7 @@ pub fn ingest_pump_token_created(candidate: &PumpCandidate, mint_flags: MintExte
             permanent_delegate: mint_flags.permanent_delegate,
             non_transferable: mint_flags.non_transferable,
             default_frozen: mint_flags.default_frozen,
+            restricted_transfer_mechanism: mint_flags.has_restricted_transfer_mechanism(),
             unsupported_token_program: !is_known_token_program(token_program),
         },
     })

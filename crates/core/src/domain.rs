@@ -64,23 +64,29 @@ pub enum EventPayload {
         creator_history_score: Option<f64>,
         mint_authority_active: bool,
         freeze_authority_active: bool,
+        /// Raw Token-2022 extension readings, kept for observability/future
+        /// scoring nuance — NOT independently checked by
+        /// `risk_engine::hard_blocks`. `restricted_transfer_mechanism`
+        /// below is the single field that actually gates the hard block;
+        /// see its doc comment for why these aren't re-derived from it.
         transfer_hook: bool,
         transfer_fee_bps: u32,
-        /// A single non-holder wallet can move or burn *any* holder's
-        /// tokens at will — a Token-2022 extension found during Stage 1
-        /// research, not present in the Stage 0 JS reference this module
-        /// was ported from. As dangerous as a transfer hook, so it gates
-        /// the same hard block (see `risk_engine::hard_blocks`).
         permanent_delegate: bool,
-        /// Token-2022 `NonTransferable` — holders can never move the
-        /// token at all. Also found during Stage 1 research.
         non_transferable: bool,
-        /// Token-2022 `DefaultAccountState = Frozen` — new holder accounts
-        /// start frozen and need an unfreeze from the freeze authority
-        /// before they can transfer; functionally equivalent to an active
-        /// freeze authority for veto purposes. Also found during Stage 1
-        /// research.
         default_frozen: bool,
+        /// The single source of truth for "can this mint be used to move
+        /// or restrict tokens against a holder's will" — computed exactly
+        /// once, by whichever ingestion path produces this event, via
+        /// `momentum_token2022::MintExtensionFlags::has_restricted_transfer_mechanism`.
+        /// `risk_engine::hard_blocks` trusts this field directly rather
+        /// than re-deriving it from the raw flags above: an earlier version
+        /// had `hard_blocks` re-implement the same OR-chain independently,
+        /// which meant a newly discovered dangerous extension had to be
+        /// added correctly in both crates by hand with nothing to catch a
+        /// missed spot — a real gap found during Stage 1 review, not
+        /// hypothetical (see `permanent_delegate` above, added after the
+        /// exact same kind of miss).
+        restricted_transfer_mechanism: bool,
         unsupported_token_program: bool,
     },
     MetadataCreated {
@@ -207,6 +213,9 @@ pub struct TechnicalFlags {
     pub permanent_delegate: bool,
     pub non_transferable: bool,
     pub default_frozen: bool,
+    /// The single field `hard_blocks` actually checks — see the doc
+    /// comment on `EventPayload::TokenCreated`'s field of the same name.
+    pub restricted_transfer_mechanism: bool,
     pub unsupported_token_program: bool,
 }
 
