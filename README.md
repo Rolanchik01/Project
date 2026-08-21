@@ -9,6 +9,7 @@
 - `crates/pumpswap` — PumpSwap AMM: декодер `Pool` и constant-product quote-математика, тоже сверенные с реальными сделками (`crates/pumpswap/idl/pump_amm.json`).
 - `crates/token2022` — проверка опасных расширений Token-2022 (transfer fee/hook, permanent delegate, non-transferable, default-frozen) поверх официального крейта `spl-token-2022`, без ручного разбора TLV.
 - `crates/ingest` — склеивающий слой над `core`/`pump`/`pumpswap`/`token2022`: собирает decoded `Candidate` + результат инспекции минта в `core::domain::Event`, который уже понимает risk-engine.
+- `crates/live` — первый живой источник событий (Dataplane): WebSocket-подписка на `logsSubscribe` через публичный Solana RPC, с переподключением/backoff. Первый асинхронный/сетевой код в проекте (`crates/live/src/bin/pump_listener.rs` — рабочая демонстрация, реально запускалась против mainnet).
 - `docs/VENUE_ADAPTER.md` — контракт venue-адаптера, теперь полностью реализован как Rust `trait` (`crates/core/src/adapter_contract.rs::VenueAdapter`) и используется обоими venue-адаптерами (`crates/pump/src/adapter.rs`, `crates/pumpswap/src/adapter.rs`).
 - `src/`, `test/`, `package.json` — архив: JS-версия Этапа 0, из которой был сделан перенос. Не развивается дальше.
 
@@ -48,3 +49,5 @@ cargo test --workspace
 Безопасность минта (`TokenCreated`) проверяется один раз, в момент создания. Если авторитет комиссии/заморозки меняет параметры Token-2022 расширений уже после запуска (например, поднимает `transfer_fee_bps` или включает `DefaultAccountState = Frozen` постфактум), это пока не обнаруживается — нет механизма периодической переинспекции минта уже открытой позиции. Это войдёт в задачу подключения живого потока событий (Dataplane), а не является полным покрытием сейчас.
 
 `PoolCreated`/`exit_liquidity_usd` (PumpSwap) — это снимок ликвидности только на момент создания пула. `DepositEvent`/`WithdrawEvent` (добавление/вывод ликвидности) ещё не декодируются в `crates/pumpswap`, поэтому `LiquidityAdded`/`LiquidityRemoved` не генерируются — цифра устаревает сразу после создания пула, пока эти декодеры не появятся. Источник цены SOL/USD для `sol_usd_price` тоже ещё не выбран и не подключён — `crates/ingest` принимает его как параметр, не вычисляет сам.
+
+`crates/live` пока умеет только `logsSubscribe` для Pump и печатает декодированные события — не подключён к `crates/ingest`/risk-engine/`recorder` (эта склейка ещё впереди), нет `accountSubscribe` для reserve-аккаунтов/минтов (нужен для `apply_update`/USD-конвертации в реальном времени), нет второй копии для PumpSwap (тот же паттерн, просто не продублирован), нет резервного провайдера (Geyser/Helius) на случай проблем с публичным RPC.
