@@ -16,6 +16,12 @@
 //!   `buy` instruction's `base_amount_out` is the user's *requested*
 //!   amount, priced the other way around — it does not match this formula,
 //!   and is intentionally not what this fixture tests.)
+//! - CREATE_POOL_B64: a real `CreatePoolEvent` from signature
+//!   4u3ZVmp4addMApwXHVtRqyawfkArCPAdMZVUJ2roqxPtzcTPgY1Fatu8oNCyKkjTeYgmrXWxCvsmBqrRJRxeUT5E
+//!   — captured live (a ~250-signature historical scan had found none;
+//!   this is the first real one seen). Base side is wrapped SOL, quote
+//!   side a non-SOL token — confirms the base-side-SOL case of the
+//!   defensive `sol_side()` handling in `crates/ingest`.
 
 use base64::Engine;
 use momentum_pumpswap::events::{decode_event, PumpSwapEvent};
@@ -25,6 +31,7 @@ use std::str::FromStr;
 
 const SELL_B64: &str = "Pi83CqUD3CpX6YdqAAAAAMWBcBsAAAAA6IguVvYCAADFgXAbAAAAALLplyteAAAAtDKKwRkAAADSr6oLktMCAEx0eKv/AgAAGQAAAAAAAABqBU/rAQAAAAUAAAAAAAAAFgFDYgAAAADibinA/QIAAMxt5l39AgAArSfSi1Hnc04iy5mSrX5kGQnSEQYKAOrKCOXNi3Pn5z/wbbbJRyF9WU8VAggkhTTV55MUnPuJW6akk69hEbXMoNjYPQfauFOfG34h2FuMlL4CkolAiJJrrU9r2th45KXlQ/JEa+wIfXa/GmNHhHDBze7QwHl3CDiNCExajHZwvgVKwvjQ3Vy8l+MonBl8tQYqVPPZVrnOblEV+WVnqlyz5qAPh45v7lcOwJc4HLGaiyZQwkxXISRSA51Uj6moxVZQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIgTAAAAAAAAi4AhMQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const BUY_B64: &str = "Z/RSHyz1d3dX6YdqAAAAACnNDFAAAAAA5EbAdUoHAAAAAAAAAAAAANdmsm06CQAAoagAFRoAAACa2MiiC1cCAORGwHVKBwAAGQAAAAAAAABsJPamBAAAAAUAAAAAAAAAfDox7gAAAABoDI+HSQcAAPznmOBEBwAA15MN77NI2BvPq1rfmk6byNA1YkD3xhagq24IZS/CmgsktWboeZxQnNFt127mhc5ARt1Pl25ah3bTqI72KULdxH1S8W8zWN67NUYyCEvq6J4+en+7LQpFm3aQ+2o+WB3hQWnrsZrcBHyyEI+N4IqIqEDNSn09Vhmk7GpV38jrPC5KwvjQ3Vy8l+MonBl8tQYqVPPZVrnOblEV+WVnqlyz5j/Ki0rjxmmlK2xlUmY3RO4xoVzkWz8cWd44M+FPGuP/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABs9yTAAAAAASAAAAYnV5X2V4YWN0X3F1b3RlX2luAAAAAAAAAAAAAAAAAAAAAIgTAAAAAAAAPp0YdwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const CREATE_POOL_B64: &str = "sTEM0qB2p3TnmYhqAAAAAAAA8EtDhVFpuI0LhlAYp8Ez30aC81gwNL9APNh4IP7WY2oGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAAfskbpTzcG/jiCaYABBdWsFNdiCpojv/70dyqVYA6NVACQaA+B/jEAAAAAAgPYh5LQAAgPgf4xAAAAAAID2IeS0AAGQAAAAAAAAAzvNWY7sBAABq81ZjuwEAAPs5AlZd65ScxVl2YVdsfdqEAUqXAvRQkRVd+mXElPbJJLUqDzy3uiHUSxMyiTlB7FOxBHznAKv185xATOvoF8kTgw7qI/DADgDgW9cmhEeA56BwdY7gw7gOkfv+4DHKT0vxhrmBCCiaHCfEygxAIAgaWh7lUkoKF0xY7ZS4yfne2/BLQ4VRabiNC4ZQGKfBM99GgvNYMDS/QDzYeCD+1mNqAA==";
 
 fn decode_fixture(b64: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
@@ -77,6 +84,26 @@ fn decodes_a_real_buy_exact_quote_in_event_and_reproduces_its_base_amount_out() 
             assert_eq!(gross_out, b.base_amount_out);
         }
         other => panic!("expected Buy, got {other:?}"),
+    }
+}
+
+#[test]
+fn decodes_a_real_create_pool_event() {
+    let data = decode_fixture(CREATE_POOL_B64);
+    let event = decode_event(&data).expect("should decode as a known event");
+    match event {
+        PumpSwapEvent::CreatePool(c) => {
+            assert_eq!(c.pool, Pubkey::from_str("4qYJkETMAnGmzbeWakoED8im3q9mesAMUFjfUsJdJxSw").unwrap());
+            assert_eq!(c.creator, Pubkey::from_str("HB1QqxzPVNs7m5PeWbxfsCDDXwccTrgjqpmUfsTe9rAm").unwrap());
+            assert_eq!(c.base_mint, Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap());
+            assert_eq!(c.quote_mint, Pubkey::from_str("HuMZ4SrjXc75NGbe62ReD9yHF6EHgFPWmLeGY3nn3oxK").unwrap());
+            assert_eq!(c.lp_mint, Pubkey::from_str("DCBzUYnb5sGcJcEFdWzMjUiaZG1VVnjakX8kv4gDYsNJ").unwrap());
+            assert_eq!(c.coin_creator, Pubkey::from_str("HB1QqxzPVNs7m5PeWbxfsCDDXwccTrgjqpmUfsTe9rAm").unwrap());
+            assert_eq!(c.base_amount_in, 72_530_000_000);
+            assert_eq!(c.quote_amount_in, 50_000_000_000_000);
+            assert!(!c.is_mayhem_mode);
+        }
+        other => panic!("expected CreatePool, got {other:?}"),
     }
 }
 

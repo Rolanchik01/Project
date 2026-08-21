@@ -1,11 +1,9 @@
 //! Pump's Anchor self-CPI event log decoding: `CreateEvent`, `TradeEvent`,
-//! `CompleteEvent`. `CreateEvent` and `TradeEvent` (both `is_buy` values)
-//! are verified byte-for-byte against real mainnet transactions — see
-//! `tests/events_test.rs`. `CompleteEvent` (graduation) uses the exact same
-//! decode methodology, applied consistently, but no real graduation was
-//! captured during Stage 1 research (mainnet migrations are rare enough
-//! that a wide signature search came up empty); it should be re-verified
-//! against a real one the first time the recorder observes it live.
+//! `CompleteEvent`. All three are verified byte-for-byte against real
+//! mainnet transactions — see `tests/events_test.rs`. `CompleteEvent`
+//! (graduation) was the hardest to catch: a historical signature search
+//! came up empty (migrations are rare), so it was only confirmed by
+//! subscribing live and waiting for one to happen in real time.
 
 use solana_pubkey::Pubkey;
 

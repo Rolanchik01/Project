@@ -10,15 +10,23 @@
 //! - SELL_TRADE_B64: a real SellV2
 //!   (3sGrXLsz4ZPtNdQgiCSvTaV79iBtijqpZpsGBQTXe95GpZHFQkGsuP4ro9RzogtCpkbfiPvRGTXhsQ4unjZvU5Du)
 //!   on mint ExXQP6ZatSTMXpP7jaWcN76k8V9vwzFUD5rPNfWGpump.
+//! - COMPLETE_B64: a real `CompleteEvent` (graduation) from signature
+//!   5QdfLUr9xwBHQ6LQZtU7ksRbGGeuMkRGcv7y4CsnGjWNmENkAiWmkVd5rZDccSnRs1GDggCAgTk9Kw5kCeeAKsL
+//!   on mint 4yGJ5ynrB4QX7AiRps1DTAzdXwEf15NvrRF5gouEpump — captured live
+//!   (historical signature search had come up empty; this is the first
+//!   real one seen). `quote_mint` is the all-zero sentinel, same as a
+//!   SOL-quoted `CreateEvent`/`TradeEvent`.
 
 use base64::Engine;
 use momentum_pump::events::{decode_event, PumpEvent};
+use momentum_pump::NATIVE_SOL_QUOTE_SENTINEL;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
 const CREATE_B64: &str = "G3KpTd7rY3YEAAAAMTAwawQAAAAxMDBrUAAAAGh0dHBzOi8vaXBmcy5pby9pcGZzL2JhZmtyZWlkcHh5NWkyNXJ2M3Ezb2VvaG5mbXJhZDN2cmJndDVrYWtsbW9ucnI0ZTN3eWxtbmd0Nmg0K+T3P/I+e0zWu6OEE56W088qbp3nm/YbCPoxqcqnl58AAAvh7GU8u74DNCowKDSNy9q8qObVSiwzKs3NxZsNDo7lsMJuRMrT6KfN5AuRku0L5eWtl+NXbyxEgyJtONGfjuWwwm5EytPop83kC5GS7Qvl5a2X41dvLESDIm040Z8NWSpqAAAAAAAQ2EfjzwMAAKwj/AYAAAAAeMX7UdECAACAxqR+jQMABt324e51j94YQl285GzN2rYa/E2DuQ0n/r35KNihi/wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKwj/AYAAAA=";
 const BUY_TRADE_B64: &str = "vdt/007mYe4r5Pc/8j57TNa7o4QTnpbTzypuneeb9hsI+jGpyqeXn7ntHgQAAAAAauzuaD4CAAABjuWwwm5EytPop83kC5GS7Qvl5a2X41dvLESDIm040Z8NWSpqAAAAALmZQgAHAAAAliPp3qTNAwC57R4EAAAAAJaL1pITzwIASsL40N1cvJfjKJwZfLUGKlTz2Va5zm5RFfllZ6pcs+ZfAAAAAAAAAJcFCgAAAAAAjuWwwm5EytPop83kC5GS7Qvl5a2X41dvLESDIm040Z8eAAAAAAAAADAqAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAGJ1eQAAAAAAAAAAAAAAAAAAAAAAiBMAAAAAAADLAgUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALntHgQAAAAAuZlCAAcAAAC57R4EAAAAAA==";
 const SELL_TRADE_B64: &str = "vdt/007mYe7PYUBfoKDfW6KvO76cx7VyTAervQucEpSyKTc2rBTT318CAAAAAAAAHoO/AAAAAAAARAZeZfu2g5tnnXTowAQe8mCx27NNkGSPH2fM5ef2IZUiUodqAAAAAKXmSDEJAAAAd6Nc04blAgClOiU1AgAAAHcLSof15gEArRHmpPwpRKT6glG++BVCbhv7KMa2ZGZ3YHxq2fVmpkZfAAAAAAAAAAYAAAAAAAAAtIVv7qvTSMYMQxACEwAbA/S4w7sl5sD1Oi1NrPVgxb8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAHNlbGwAHgAAAAAAAAACAAAAAAAAAIgTAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABfAgAAAAAAAKXmSDEJAAAApTolNQIAAAA=";
+const COMPLETE_B64: &str = "X3JhnNQumAgVfWPULgCfjRKK3R2Dglx1t4NZb28o7w2//1tP0kZSRDr84TXbXA0jyAcB2CgSU1LmHI5ekjqDl3WJQ9mIt9If8ZglL/EODgEWy3HpdwBDrNTbGwWid0frBi+cbejg871JmohqAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 fn decode_fixture(b64: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
@@ -86,6 +94,22 @@ fn decodes_a_real_sell_v2_trade_event() {
             assert_eq!(t.fee, 6);
         }
         other => panic!("expected Trade, got {other:?}"),
+    }
+}
+
+#[test]
+fn decodes_a_real_complete_event() {
+    let data = decode_fixture(COMPLETE_B64);
+    let event = decode_event(&data).expect("should decode as a known event");
+    match event {
+        PumpEvent::Complete(c) => {
+            assert_eq!(c.user, Pubkey::from_str("2StTWuacuBE1rfWVY9G3iXyb3WRcmf8wKbnPBBRe6iDq").unwrap());
+            assert_eq!(c.mint, Pubkey::from_str("4yGJ5ynrB4QX7AiRps1DTAzdXwEf15NvrRF5gouEpump").unwrap());
+            assert_eq!(c.bonding_curve, Pubkey::from_str("HG5pAcVqdrixHnTVa2fRLSgGvezeM79twufgZABqPjT2").unwrap());
+            assert_eq!(c.timestamp, 1_787_337_289);
+            assert_eq!(c.quote_mint, NATIVE_SOL_QUOTE_SENTINEL);
+        }
+        other => panic!("expected Complete, got {other:?}"),
     }
 }
 

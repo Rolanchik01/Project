@@ -13,10 +13,11 @@
 //! other way around and does *not* match that formula, as expected.
 //!
 //! `CreatePoolEvent` uses the same decode methodology, applied
-//! consistently, but pool creation proved too rare to capture live during
-//! Stage 1 research (a scan of ~250+ recent PumpSwap signatures found none)
-//! — it should be re-verified against a real one the first time the
-//! recorder observes it live, same caveat as Pump's `CompleteEvent`.
+//! consistently, and is now also verified byte-for-byte against a real one
+//! — see `tests/events_test.rs`. A historical scan of ~250+ recent
+//! PumpSwap signatures had found none; it was only confirmed by
+//! subscribing live and waiting for one to happen in real time, same as
+//! Pump's `CompleteEvent`.
 
 use solana_pubkey::Pubkey;
 

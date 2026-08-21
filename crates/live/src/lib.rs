@@ -5,15 +5,18 @@
 //! Deliberately scoped narrow for this pass — proving the live pipe works
 //! end to end on the real, currently-flowing chain, not yet the full
 //! pipeline:
-//! - Only Pump's program is listened to (PumpSwap needs the same
-//!   `listener::run` with a different `program_id`, not yet duplicated
-//!   into a second running task here).
-//! - Only `logsSubscribe` (transaction logs) is wired up. `apply_update`
-//!   (bonding curve reserves, mint account inspection) needs
-//!   `accountSubscribe` on specific accounts discovered dynamically from
-//!   `TokenCreated`/`Trade` events as they arrive — a genuinely separate,
-//!   stateful subscription-management problem (which accounts are we
-//!   watching, when to add/drop one) not built here.
+//! - Two demo binaries (`bin/pump_listener.rs`, `bin/pumpswap_listener.rs`)
+//!   each run `listener::run` with a different `program_id`, proving the
+//!   listener itself is venue-agnostic — but each is its own standalone
+//!   process; there is no single process that watches both venues (or any
+//!   other) at once yet.
+//! - `logsSubscribe` (transaction logs, `listener`/`logs`) and
+//!   `accountSubscribe` (`account_watcher`/`account_notification`) both
+//!   exist now, but nothing connects them to `TokenCreated`/`Trade` events
+//!   yet — `account_watcher::run` will watch whatever pubkeys it's told
+//!   to, but no code decides *which* bonding-curve/pool/mint accounts to
+//!   watch as new ones are discovered live. That decision layer, and the
+//!   `apply_update` wiring it would feed, is still not built.
 //! - Nothing here calls into `momentum_ingest`, `risk_engine`, or the
 //!   `recorder` yet — this crate only proves raw bytes flow from the real
 //!   chain into the already-tested decoder in real time. Wiring that into
@@ -25,5 +28,7 @@
 //!   that; this is the minimum that keeps a single connection alive
 //!   through ordinary network blips.
 
+pub mod account_notification;
+pub mod account_watcher;
 pub mod listener;
 pub mod logs;
