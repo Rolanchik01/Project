@@ -36,6 +36,8 @@ pub enum Candidate {
         coin_creator: Pubkey,
         lp_mint: Pubkey,
         is_mayhem_mode: bool,
+        base_amount_in: u64,
+        quote_amount_in: u64,
     },
     Trade {
         pool: Pubkey,
@@ -163,6 +165,8 @@ impl VenueAdapter for PumpSwapAdapter {
                 coin_creator: c.coin_creator,
                 lp_mint: c.lp_mint,
                 is_mayhem_mode: c.is_mayhem_mode,
+                base_amount_in: c.base_amount_in,
+                quote_amount_in: c.quote_amount_in,
             }),
             PumpSwapEvent::Buy(b) => Some(Candidate::Trade {
                 pool: b.pool,

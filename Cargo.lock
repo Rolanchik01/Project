@@ -540,6 +540,7 @@ dependencies = [
  "base64 0.23.1",
  "momentum-core",
  "momentum-pump",
+ "momentum-pumpswap",
  "momentum-token2022",
  "solana-pubkey 3.0.0",
 ]
