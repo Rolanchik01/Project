@@ -21,6 +21,9 @@
 
 use solana_pubkey::Pubkey;
 
+pub mod adapter;
+pub mod events;
+
 pub const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 
 /// Sentinel written into `BondingCurve.quote_mint` for a plain SOL-quoted

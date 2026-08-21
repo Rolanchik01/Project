@@ -9,11 +9,19 @@
 //! in; this module never reads accounts.
 //!
 //! Both directions were verified against real mainnet `BuyEvent`/`SellEvent`
-//! logs on non-boost pools (see `tests/amm_test.rs`):
+//! logs on non-boost pools — first against hand-extracted reserve numbers
+//! (see `tests/amm_test.rs`), then again in Group B against two full,
+//! freshly captured raw event fixtures decoded byte-for-byte (see
+//! `tests/events_test.rs`), both confirming exact (not just within-rounding)
+//! agreement once fed the event's own pre-trade reserves:
 //! - sell: `gross_quote_out = floor(base_in * quote_reserves / (base_reserves + base_in))`,
-//!   matching the real gross output exactly (not just within rounding).
-//! - buy (`buy_exact_quote_in`): `base_out = floor(base_reserves - k / (quote_reserves + net_quote_in))`,
-//!   matching the real base output to within 1 unit of integer truncation.
+//!   matching the real gross output exactly.
+//! - buy (`buy_exact_quote_in`): `base_out = floor(net_quote_in * base_reserves / (quote_reserves + net_quote_in))`,
+//!   matching the real base output exactly. (Computing this via an
+//!   intermediate `k = base_reserves * quote_reserves` and subtracting is
+//!   mathematically equivalent in real numbers but can land 1 unit off here
+//!   depending on where the integer floor falls — the direct form above is
+//!   what actually matches the program.)
 //!
 //! Scope: only `is_mayhem_mode = false`, `is_cashback_coin = false`, and
 //! `virtual_quote_reserves = 0` ("non-boost") pools are priced. A real
@@ -30,6 +38,9 @@
 //! must read the real fee fields off the historical event instead.
 
 use solana_pubkey::Pubkey;
+
+pub mod adapter;
+pub mod events;
 
 pub const PUMPSWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 
