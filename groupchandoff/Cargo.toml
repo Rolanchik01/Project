@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/ingest", "crates/pump", "crates/pumpswap", "crates/token2022"]
+
+[workspace.package]
+edition = "2021"
