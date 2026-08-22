@@ -61,14 +61,16 @@
 //! - One process, one connection per subscription, no fallback RPC
 //!   provider — same as every other binary in this crate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 use momentum_core::adapter_contract::{AdapterRegistry, VenueAdapter};
 use momentum_core::dedup::StreamDeduplicator;
-use momentum_core::domain::{EventPayload, ReplayState};
+use momentum_core::domain::{Event, EventPayload, ReplayState, Venue};
 use momentum_core::recorder::NdjsonRecorder;
-use momentum_core::risk_engine;
+use momentum_core::risk_engine::{self, Decision, RiskSnapshot};
 use momentum_core::scoring_config::DEFAULT_SCORING_CONFIG;
+use momentum_ingest::price::{is_wrapped_sol, lamports_to_usd, usd_to_lamports};
 use momentum_ingest::price_feed::{decode_sol_usd_update, sol_usd_price_account};
 use momentum_ingest::{
     ingest_pump_graduated, ingest_pump_token_created, ingest_pump_trade, ingest_pumpswap_deposit,
@@ -79,18 +81,21 @@ use momentum_live::account_watcher::{self, WatchCommand, WatcherConfig};
 use momentum_live::listener::{self, ListenerConfig};
 use momentum_live::logs::RawLogEvent;
 use momentum_live::rpc_fetch::fetch_account_with_retry;
+use momentum_portfolio::{position_size_usd, ClosedTrade, ExitReason, Portfolio, DEFAULT_POSITION_SIZING_CONFIG};
 use momentum_pump::adapter::{Candidate as PumpCandidate, PumpAdapter};
 use momentum_pump::PUMP_PROGRAM_ID;
 use momentum_pumpswap::adapter::{Candidate as PumpSwapCandidate, PumpSwapAdapter};
 use momentum_pumpswap::PUMPSWAP_PROGRAM_ID;
 use momentum_reputation::{CreatorLedger, TraderLedger};
 use momentum_token2022::inspect_mint;
+use serde::Serialize;
 use solana_pubkey::Pubkey;
 use tokio::sync::mpsc;
 
 const PROGRAM_VERSION: &str = "2026-08-stage1";
 const CHANNEL_CAPACITY: usize = 1024;
 const HTTP_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
+const PAPER_TRADES_PATH: &str = "recordings/paper_trades.ndjson";
 const CREATOR_LEDGER_PATH: &str = "recordings/creator_ledger.ndjson";
 const TRADER_LEDGER_PATH: &str = "recordings/trader_ledger.ndjson";
 /// See `rpc_fetch::fetch_account_with_retry`'s doc comment: clears the
@@ -111,6 +116,64 @@ const MINT_FETCH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_mi
 struct MintFetchResult {
     mint: Pubkey,
     outcome: Result<AccountUpdate, String>,
+}
+
+/// One entry in `PAPER_TRADES_PATH` — Group G's own accumulating trade
+/// record, separate from `pipeline.ndjson` (which records every scored
+/// `core::domain::Event`, not just the ones that became a paper trade) and
+/// from `creator_ledger.ndjson`/`trader_ledger.ndjson` (reputation facts,
+/// not trade outcomes). This is the log `bin/paper_trade_report.rs`
+/// (Group G.8) reads to answer "is this strategy actually profitable" —
+/// see that binary's doc comment for why it reads *this* accumulated log
+/// rather than replaying `pipeline.ndjson` after the fact.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PaperTradeLogEntry {
+    Opened { mint: String, venue: String, entry_usd: f64, decision: String, opened_at_ns: u64 },
+    Closed {
+        mint: String,
+        venue: String,
+        entry_usd: f64,
+        exit_usd: f64,
+        pnl_usd: f64,
+        pnl_pct: f64,
+        decision: String,
+        reason: String,
+        opened_at_ns: u64,
+        closed_at_ns: u64,
+    },
+}
+
+fn venue_str(venue: Venue) -> &'static str {
+    match venue {
+        Venue::Pump => "pump",
+        Venue::PumpSwap => "pumpswap",
+        Venue::RaydiumCpmm => "raydium_cpmm",
+        Venue::RaydiumClmm => "raydium_clmm",
+        Venue::RaydiumLaunchLab => "raydium_launch_lab",
+        Venue::MeteoraDlmm => "meteora_dlmm",
+    }
+}
+
+fn append_paper_trade_log(entry: &PaperTradeLogEntry) {
+    use std::io::Write;
+    let line = match serde_json::to_string(entry) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("pipeline: failed to serialize paper trade log entry: {e}");
+            return;
+        }
+    };
+    let result = (|| -> std::io::Result<()> {
+        if let Some(parent) = std::path::Path::new(PAPER_TRADES_PATH).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(PAPER_TRADES_PATH)?;
+        writeln!(file, "{line}")
+    })();
+    if let Err(e) = result {
+        eprintln!("pipeline: failed to append paper trade log: {e}");
+    }
 }
 
 struct Pipeline {
@@ -147,6 +210,29 @@ struct Pipeline {
     /// `TRADER_LEDGER_PATH`; slot-clustering itself is not (see that
     /// module's doc comment on `slot_clusters`).
     trader_ledger: TraderLedger,
+    /// Paper positions and realized P&L (Group G.6/G.7) — see
+    /// `momentum_portfolio`'s crate doc comment for the sizing/exit
+    /// policy. Not persisted across restarts: unlike the reputation
+    /// ledgers, an open paper position depends on live-cached
+    /// curve/pool state (`pump_adapter`/`pumpswap_adapter`) that itself
+    /// resets on restart, so resuming a position without that state would
+    /// mean tracking P&L against a price this process can no longer
+    /// verify. `PAPER_TRADES_PATH` is the durable record of every trade
+    /// this portfolio ever made, across every run.
+    portfolio: Portfolio,
+    /// `mint -> pool` for every PumpSwap pool this process has decoded —
+    /// needed to value (or enter) a position through PumpSwap, since
+    /// `PumpSwapAdapter` itself is keyed by pool address, not mint (see
+    /// its doc comment). Populated the moment a `PoolCreated` event is
+    /// scored, same point `creator_ledger.observe_pool_created` already
+    /// runs.
+    mint_to_pool: HashMap<String, Pubkey>,
+    /// Pool addresses whose two reserve token accounts have already been
+    /// `Watch`ed — set once per pool the first time `handle_account_update`
+    /// sees that pool's own account decode successfully, so a later
+    /// re-update of the same `Pool` account doesn't re-issue the same two
+    /// `Watch` commands.
+    watched_pool_reserves: HashSet<Pubkey>,
 }
 
 impl Pipeline {
@@ -178,6 +264,207 @@ impl Pipeline {
             snapshot.demand_score,
             snapshot.exit_liquidity_usd
         );
+        self.handle_position_lifecycle(&event, &snapshot);
+    }
+
+    /// Checks a currently-held position for an exit on every event for its
+    /// mint (emergency exit first, then take-profit/stop-loss), or — for a
+    /// mint with no open position — whether this event's freshly computed
+    /// `snapshot` now warrants opening one. Never both in the same call:
+    /// a mint already held is only ever evaluated for exit here, not
+    /// resized or re-entered (`position_size_usd` would refuse a mint
+    /// that's already open anyway, but returning early makes the "one
+    /// position at a time per mint" invariant explicit rather than
+    /// incidental).
+    fn handle_position_lifecycle(&mut self, event: &Event, snapshot: &RiskSnapshot) {
+        let mint: &str = &event.mint;
+
+        if self.portfolio.is_open(mint) {
+            let emergency = !snapshot.hard_blocks.is_empty()
+                || matches!(&event.payload, EventPayload::LiquidityRemoved { all_liquidity_removed: true, .. });
+            if emergency {
+                // Best available value, or a total loss if none can be
+                // quoted at all (e.g. the pool's reserves just went to
+                // zero) — matches `Portfolio`'s own doc comment on why an
+                // emergency exit is allowed to close at 0.0 rather than
+                // block on a quote that may no longer be obtainable.
+                let value = self.current_position_value_usd(mint).unwrap_or(0.0);
+                if let Some(trade) = self.portfolio.close_position(mint, value, ExitReason::EmergencyExit, event.observed_at_ns) {
+                    self.log_paper_trade_closed(&trade);
+                }
+            } else if let Some(value) = self.current_position_value_usd(mint) {
+                if let Some(reason) = self.portfolio.check_exit(mint, value, &DEFAULT_POSITION_SIZING_CONFIG) {
+                    if let Some(trade) = self.portfolio.close_position(mint, value, reason, event.observed_at_ns) {
+                        self.log_paper_trade_closed(&trade);
+                    }
+                }
+            }
+            return;
+        }
+
+        self.try_open_position(mint, event.venue, snapshot.decision, snapshot.position_multiplier, event.observed_at_ns);
+    }
+
+    /// Sizes and opens a new paper position for `mint` if `decision`
+    /// warrants one and a real entry quote can be obtained. If
+    /// `position_size_usd` itself says no entry is warranted (no cash, no
+    /// capacity, decision doesn't call for a position) this returns silently
+    /// — that's the overwhelming majority of scored events under normal
+    /// Observe/Reject conditions, and logging it would be pure noise. Once a
+    /// size has actually been computed, every further drop reason (missing
+    /// SOL price, invalid mint, no cached curve/pool state, quote failure)
+    /// is logged via `eprintln!`, since at that point a real entry was
+    /// warranted but couldn't be completed.
+    fn try_open_position(&mut self, mint: &str, venue: Venue, decision: Decision, position_multiplier: f64, opened_at_ns: u64) {
+        let Some(size_usd) = position_size_usd(&DEFAULT_POSITION_SIZING_CONFIG, &self.portfolio, mint, decision, position_multiplier) else {
+            return;
+        };
+        let Some(sol_price) = self.sol_usd_price else {
+            eprintln!("pipeline: {decision:?} sized {mint} at ${size_usd:.2} but no SOL/USD price yet, dropping entry");
+            return;
+        };
+        let Some(lamports_in) = usd_to_lamports(size_usd, sol_price) else {
+            eprintln!("pipeline: {decision:?} sized {mint} at ${size_usd:.2} but could not convert to lamports at sol_price={sol_price}, dropping entry");
+            return;
+        };
+
+        let token_amount = match venue {
+            Venue::Pump => {
+                let Ok(mint_pk) = Pubkey::from_str(mint) else {
+                    eprintln!("pipeline: {decision:?} sized {mint} at ${size_usd:.2} but mint is not a valid pubkey, dropping entry");
+                    return;
+                };
+                let curve_key = PumpAdapter::bonding_curve_pda(&mint_pk);
+                let Some(curve) = self.pump_adapter.curve(&curve_key) else {
+                    eprintln!("pipeline: {decision:?} sized {mint} at ${size_usd:.2} but no cached bonding curve yet, dropping entry");
+                    return;
+                };
+                match momentum_pump::quote_buy_exact_quote_in(curve, lamports_in) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("pipeline: {decision:?} sized {mint} at ${size_usd:.2} but Pump quote failed ({e:?}), dropping entry");
+                        return;
+                    }
+                }
+            }
+            Venue::PumpSwap => {
+                let Some(&pool_addr) = self.mint_to_pool.get(mint) else {
+                    eprintln!("pipeline: {decision:?} sized {mint} at ${size_usd:.2} but no known PumpSwap pool yet, dropping entry");
+                    return;
+                };
+                match self.quote_pumpswap_buy_with_sol(&pool_addr, lamports_in) {
+                    Some(t) => t,
+                    None => {
+                        eprintln!("pipeline: {decision:?} sized {mint} at ${size_usd:.2} but PumpSwap quote failed (reserves not yet known or venue not priceable), dropping entry");
+                        return;
+                    }
+                }
+            }
+            _ => {
+                eprintln!("pipeline: {decision:?} sized {mint} at ${size_usd:.2} but venue {venue:?} is not tradeable, dropping entry");
+                return;
+            }
+        };
+
+        self.portfolio.open_position(mint.to_string(), venue, size_usd, token_amount, decision, opened_at_ns);
+        append_paper_trade_log(&PaperTradeLogEntry::Opened {
+            mint: mint.to_string(),
+            venue: venue_str(venue).to_string(),
+            entry_usd: size_usd,
+            decision: decision.as_str().to_string(),
+            opened_at_ns,
+        });
+        println!("[{mint}] PAPER OPEN venue={venue:?} entry_usd={size_usd:.2} decision={}", decision.as_str());
+    }
+
+    fn log_paper_trade_closed(&self, trade: &ClosedTrade) {
+        append_paper_trade_log(&PaperTradeLogEntry::Closed {
+            mint: trade.mint.clone(),
+            venue: venue_str(trade.venue).to_string(),
+            entry_usd: trade.entry_usd,
+            exit_usd: trade.exit_usd,
+            pnl_usd: trade.pnl_usd,
+            pnl_pct: trade.pnl_pct,
+            decision: trade.decision.as_str().to_string(),
+            reason: trade.reason.as_str().to_string(),
+            opened_at_ns: trade.opened_at_ns,
+            closed_at_ns: trade.closed_at_ns,
+        });
+        println!(
+            "[{}] PAPER CLOSE venue={:?} reason={:?} entry_usd={:.2} exit_usd={:.2} pnl_usd={:.2} ({:+.1}%)",
+            trade.mint,
+            trade.venue,
+            trade.reason,
+            trade.entry_usd,
+            trade.exit_usd,
+            trade.pnl_usd,
+            trade.pnl_pct * 100.0
+        );
+    }
+
+    /// A real, current-state quote for `mint`'s open position, trying
+    /// PumpSwap first and falling back to Pump — not a fixed choice based
+    /// on which venue the position was opened through, because a mint
+    /// opened pre-graduation (Pump) can graduate to a PumpSwap pool while
+    /// still held, at which point the bonding curve stops trading and only
+    /// the pool has a live price. `None` if neither has cached state to
+    /// quote against yet (the position is left open, re-checked on the
+    /// next event for this mint).
+    fn current_position_value_usd(&self, mint: &str) -> Option<f64> {
+        let position = self.portfolio.open_position_for(mint)?;
+        let sol_price = self.sol_usd_price?;
+
+        if let Some(&pool_addr) = self.mint_to_pool.get(mint) {
+            if let Some(lamports_out) = self.quote_pumpswap_sell_for_sol(&pool_addr, position.token_amount) {
+                return lamports_to_usd(lamports_out, sol_price);
+            }
+        }
+
+        let mint_pk = Pubkey::from_str(mint).ok()?;
+        let curve_key = PumpAdapter::bonding_curve_pda(&mint_pk);
+        let curve = self.pump_adapter.curve(&curve_key)?;
+        let lamports_out = momentum_pump::quote_sell(curve, position.token_amount).ok()?;
+        lamports_to_usd(lamports_out, sol_price)
+    }
+
+    /// Real quote for spending `sol_lamports_in` to buy `pool`'s non-SOL
+    /// side, using `pool`'s currently cached reserves. Which of PumpSwap's
+    /// `quote_buy_exact_quote_in`/`quote_sell` computes that depends on
+    /// which side of the pool SOL sits on — verified real pools split
+    /// roughly evenly (see `crates/ingest/src/pumpswap.rs`'s module doc
+    /// comment), so both cases are real, not a hypothetical one this
+    /// mirrors:
+    /// - SOL is `quote_mint`: spending quote to get base is exactly what
+    ///   `quote_buy_exact_quote_in` computes.
+    /// - SOL is `base_mint`: spending base to get quote is exactly what
+    ///   `quote_sell` computes (it doesn't care that the base side happens
+    ///   to be SOL here rather than the token) — no reserve reordering
+    ///   needed, just the other function.
+    fn quote_pumpswap_buy_with_sol(&self, pool_addr: &Pubkey, sol_lamports_in: u64) -> Option<u64> {
+        let pool = self.pumpswap_adapter.pool(pool_addr)?;
+        let (base_reserves, quote_reserves) = self.pumpswap_adapter.known_reserves(pool_addr)?;
+        if is_wrapped_sol(&pool.quote_mint) {
+            momentum_pumpswap::quote_buy_exact_quote_in(pool, base_reserves, quote_reserves, sol_lamports_in).ok()
+        } else if is_wrapped_sol(&pool.base_mint) {
+            momentum_pumpswap::quote_sell(pool, base_reserves, quote_reserves, sol_lamports_in).ok()
+        } else {
+            None
+        }
+    }
+
+    /// Real quote for selling `token_amount_in` (the tracked non-SOL side
+    /// of `pool`) back for SOL — the mirror image of
+    /// `quote_pumpswap_buy_with_sol`, same reasoning, functions swapped.
+    fn quote_pumpswap_sell_for_sol(&self, pool_addr: &Pubkey, token_amount_in: u64) -> Option<u64> {
+        let pool = self.pumpswap_adapter.pool(pool_addr)?;
+        let (base_reserves, quote_reserves) = self.pumpswap_adapter.known_reserves(pool_addr)?;
+        if is_wrapped_sol(&pool.quote_mint) {
+            momentum_pumpswap::quote_sell(pool, base_reserves, quote_reserves, token_amount_in).ok()
+        } else if is_wrapped_sol(&pool.base_mint) {
+            momentum_pumpswap::quote_buy_exact_quote_in(pool, base_reserves, quote_reserves, token_amount_in).ok()
+        } else {
+            None
+        }
     }
 
     fn ctx(&self, raw: &RawLogEvent) -> EventContext {
@@ -262,6 +549,7 @@ impl Pipeline {
                     // real pool creation (it's watched from process
                     // start), so this hasn't been observed to matter.
                     self.creator_ledger.observe_pool_created(&event.mint, &pool.to_string());
+                    self.mint_to_pool.insert(event.mint.clone(), *pool);
                     self.apply_and_record(event);
                 }
             }
@@ -338,6 +626,22 @@ impl Pipeline {
         let pubkey = update.pubkey;
         let _ = self.pump_adapter.apply_update(&momentum_pump::adapter::AccountUpdate { pubkey, data: update.data.clone() });
         let _ = self.pumpswap_adapter.apply_update(&momentum_pumpswap::adapter::AccountUpdate { pubkey, data: update.data });
+
+        // `pubkey` is a *pool's own* address only right after its `Pool`
+        // account itself decodes successfully (`PumpSwapAdapter::pool`
+        // keys by exactly that address) — a reserve token account update
+        // has a different pubkey and will never match here. First time
+        // this fires for a given pool, watch its two real reserve
+        // accounts too; `PumpSwapAdapter::apply_update` already knows how
+        // to recognize and cache their balances once watched (see its doc
+        // comment), it just needs someone to ask for them.
+        if !self.watched_pool_reserves.contains(&pubkey) {
+            if let Some(pool) = self.pumpswap_adapter.pool(&pubkey) {
+                let _ = self.watch_tx.send(WatchCommand::Watch(pool.pool_base_token_account)).await;
+                let _ = self.watch_tx.send(WatchCommand::Watch(pool.pool_quote_token_account)).await;
+                self.watched_pool_reserves.insert(pubkey);
+            }
+        }
     }
 
     /// Fires off the one-shot `getAccountInfo` fetch for a just-created
@@ -439,6 +743,9 @@ async fn main() {
         mint_fetch_tx,
         creator_ledger,
         trader_ledger,
+        portfolio: Portfolio::new(DEFAULT_POSITION_SIZING_CONFIG.initial_capital_usd),
+        mint_to_pool: HashMap::new(),
+        watched_pool_reserves: HashSet::new(),
     };
 
     eprintln!("pipeline: listening for live Pump + PumpSwap events, recording to recordings/pipeline.ndjson (ctrl-c to stop)...");

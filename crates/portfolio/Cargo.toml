@@ -1,0 +1,9 @@
+[package]
+name = "momentum-portfolio"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+momentum-core = { version = "0.1.0", path = "../core" }
+
+[dev-dependencies]

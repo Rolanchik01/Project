@@ -7,7 +7,7 @@
 //! risk snapshot with zero or infinite USD amounts instead of being
 //! refused.
 
-use momentum_ingest::price::{is_wrapped_sol, lamports_to_usd, WRAPPED_SOL_MINT};
+use momentum_ingest::price::{is_wrapped_sol, lamports_to_usd, usd_to_lamports, WRAPPED_SOL_MINT};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -45,4 +45,35 @@ fn refuses_a_price_extreme_enough_to_overflow_the_conversion_to_infinity() {
     // f64::MAX per SOL overflows to +inf.
     assert!(f64::MAX.is_finite());
     assert_eq!(lamports_to_usd(2_000_000_000, f64::MAX), None);
+}
+
+#[test]
+fn usd_to_lamports_round_trips_with_lamports_to_usd_at_a_round_price() {
+    assert_eq!(usd_to_lamports(150.0, 150.0), Some(1_000_000_000));
+}
+
+#[test]
+fn usd_to_lamports_refuses_a_zero_or_non_finite_price() {
+    assert_eq!(usd_to_lamports(100.0, 0.0), None);
+    assert_eq!(usd_to_lamports(100.0, -1.0), None);
+    assert_eq!(usd_to_lamports(100.0, f64::NAN), None);
+    assert_eq!(usd_to_lamports(100.0, f64::INFINITY), None);
+}
+
+#[test]
+fn usd_to_lamports_refuses_a_negative_or_non_finite_usd_amount() {
+    assert_eq!(usd_to_lamports(-1.0, 150.0), None);
+    assert_eq!(usd_to_lamports(f64::NAN, 150.0), None);
+    assert_eq!(usd_to_lamports(f64::INFINITY, 150.0), None);
+}
+
+#[test]
+fn usd_to_lamports_refuses_an_amount_that_would_overflow_u64() {
+    // A tiny price makes the lamport amount blow past u64::MAX.
+    assert_eq!(usd_to_lamports(1e30, 1e-10), None);
+}
+
+#[test]
+fn zero_usd_is_a_valid_zero_lamport_result_not_refused() {
+    assert_eq!(usd_to_lamports(0.0, 150.0), Some(0));
 }

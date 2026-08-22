@@ -50,6 +50,25 @@ pub fn lamports_to_usd(lamports: u64, sol_usd_price: f64) -> Option<f64> {
     Some(usd)
 }
 
+/// Converts a USD amount into lamports at the given SOL/USD price — the
+/// inverse of `lamports_to_usd`, needed by `momentum_portfolio`'s position
+/// sizing (Group G.6): a sized USD entry has to become a real
+/// `quote_buy_exact_quote_in` lamport input before it can produce a real
+/// token amount. Same rejection rules as `lamports_to_usd`, for the same
+/// reasons: a non-finite/non-positive price, or a `usd` that isn't finite
+/// either, must not silently produce a nonsense (or `u64`-overflowing)
+/// lamport amount.
+pub fn usd_to_lamports(usd: f64, sol_usd_price: f64) -> Option<u64> {
+    if !sol_usd_price.is_finite() || sol_usd_price <= 0.0 || !usd.is_finite() || usd < 0.0 {
+        return None;
+    }
+    let lamports = (usd / sol_usd_price) * LAMPORTS_PER_SOL as f64;
+    if !lamports.is_finite() || lamports < 0.0 || lamports > u64::MAX as f64 {
+        return None;
+    }
+    Some(lamports as u64)
+}
+
 /// Shared `Buy`/`Sell` payload construction for both venues — kept in one
 /// place so the field mapping can't drift between `pump.rs` and
 /// `pumpswap.rs`. `cluster_id`/`quality` come from the caller (normally
