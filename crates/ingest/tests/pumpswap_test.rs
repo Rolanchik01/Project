@@ -79,7 +79,7 @@ fn converts_a_real_sell_on_a_sol_as_base_pool_to_usd() {
     let pool = Pool::decode(&decode_fixture(SOL_AS_BASE_POOL_B64)).unwrap();
     assert_eq!(pool.base_mint, Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap());
 
-    let event = ingest_pumpswap_trade(&candidate, &pool, 150.0, &ctx()).expect("should produce an event");
+    let event = ingest_pumpswap_trade(&candidate, &pool, 150.0, None, 0.0, &ctx()).expect("should produce an event");
 
     assert_eq!(event.venue, Venue::PumpSwap);
     // The pool's quote_mint (not SOL) is the tracked token here — SOL is
@@ -91,6 +91,27 @@ fn converts_a_real_sell_on_a_sol_as_base_pool_to_usd() {
             // (verified exactly in crates/pumpswap/tests/events_test.rs).
             let expected = 460_358_085.0 / 1_000_000_000.0 * 150.0;
             assert!((amount_usd - expected).abs() < 1e-9, "{amount_usd} vs {expected}");
+        }
+        other => panic!("expected Sell, got {other:?}"),
+    }
+}
+
+/// A caller-supplied `(cluster_id, buyer_quality)` (from
+/// `momentum_reputation::TraderLedger::observe_trade`, in the live
+/// pipeline) flows through into the event's payload unchanged. Uses the
+/// real SELL_B64 fixture, so this exercises `seller_cluster_id` — the
+/// `Sell` payload carries no quality field, matching `EventPayload::Sell`'s
+/// shape.
+#[test]
+fn a_supplied_cluster_id_flows_through_into_a_sell_event() {
+    let adapter = PumpSwapAdapter::new("pumpswap-layout-2026-08");
+    let candidate = adapter.decode(&decode_fixture(SELL_B64)).expect("should decode");
+    let pool = Pool::decode(&decode_fixture(SOL_AS_BASE_POOL_B64)).unwrap();
+
+    let event = ingest_pumpswap_trade(&candidate, &pool, 150.0, Some("cluster-xyz".to_string()), 0.9, &ctx()).expect("should produce an event");
+    match event.payload {
+        EventPayload::Sell { seller_cluster_id, .. } => {
+            assert_eq!(seller_cluster_id, Some("cluster-xyz".to_string()));
         }
         other => panic!("expected Sell, got {other:?}"),
     }
@@ -119,7 +140,7 @@ fn converts_a_trade_on_a_real_sol_as_quote_pool_using_the_quote_leg() {
         can_boost: true,
     };
 
-    let event = ingest_pumpswap_trade(&candidate, &pool, 150.0, &ctx()).expect("should produce an event");
+    let event = ingest_pumpswap_trade(&candidate, &pool, 150.0, None, 0.0, &ctx()).expect("should produce an event");
     assert_eq!(event.mint, pool.base_mint.to_string());
     match event.payload {
         EventPayload::Buy { amount_usd, .. } => {
@@ -149,7 +170,7 @@ fn refuses_a_real_pool_with_neither_side_denominated_in_sol() {
         coin_creator_fee: 0,
         can_boost: false,
     };
-    assert!(ingest_pumpswap_trade(&candidate, &pool, 150.0, &ctx()).is_none());
+    assert!(ingest_pumpswap_trade(&candidate, &pool, 150.0, None, 0.0, &ctx()).is_none());
 }
 
 #[test]
@@ -167,8 +188,8 @@ fn refuses_a_non_finite_or_negative_price() {
         coin_creator_fee: 0,
         can_boost: false,
     };
-    assert!(ingest_pumpswap_trade(&candidate, &pool, f64::NAN, &ctx()).is_none());
-    assert!(ingest_pumpswap_trade(&candidate, &pool, -1.0, &ctx()).is_none());
+    assert!(ingest_pumpswap_trade(&candidate, &pool, f64::NAN, None, 0.0, &ctx()).is_none());
+    assert!(ingest_pumpswap_trade(&candidate, &pool, -1.0, None, 0.0, &ctx()).is_none());
 }
 
 #[test]

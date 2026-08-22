@@ -51,15 +51,18 @@ pub fn lamports_to_usd(lamports: u64, sol_usd_price: f64) -> Option<f64> {
 }
 
 /// Shared `Buy`/`Sell` payload construction for both venues — kept in one
-/// place so the "wallet intelligence isn't built yet" placeholder
-/// convention (`buyer_cluster_id`/`seller_cluster_id: None`,
-/// `buyer_quality: 0.0`, both inert against `risk_engine::apply_event`,
-/// which only reads `buyer_quality` inside the `Some(cluster_id)` branch)
-/// can't drift between `pump.rs` and `pumpswap.rs`.
-pub(crate) fn buy_sell_payload(is_buy: bool, amount_usd: f64) -> EventPayload {
+/// place so the field mapping can't drift between `pump.rs` and
+/// `pumpswap.rs`. `cluster_id`/`quality` come from the caller (normally
+/// `momentum_reputation::TraderLedger::observe_trade`, called before this
+/// function so they reflect the wallet's history *before* this trade) —
+/// `quality` is only meaningful (and only read by `risk_engine`) inside
+/// the `Buy` arm; the `Sell` side of `EventPayload` carries no quality
+/// field at all, so it's silently unused there rather than threaded
+/// through for nothing.
+pub(crate) fn buy_sell_payload(is_buy: bool, amount_usd: f64, cluster_id: Option<String>, quality: f64) -> EventPayload {
     if is_buy {
-        EventPayload::Buy { buyer_cluster_id: None, buyer_quality: 0.0, amount_usd }
+        EventPayload::Buy { buyer_cluster_id: cluster_id, buyer_quality: quality, amount_usd }
     } else {
-        EventPayload::Sell { seller_cluster_id: None, amount_usd }
+        EventPayload::Sell { seller_cluster_id: cluster_id, amount_usd }
     }
 }

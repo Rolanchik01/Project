@@ -56,7 +56,7 @@ fn ingests_a_real_token_created_candidate_with_no_dangerous_extensions_into_a_cl
     assert_eq!(&mint_data[0..4], &[0, 0, 0, 0]);
     assert_eq!(&mint_data[46..50], &[0, 0, 0, 0]);
 
-    let event = ingest_pump_token_created(&candidate, mint_flags, &ctx()).expect("should produce an event");
+    let event = ingest_pump_token_created(&candidate, mint_flags, None, &ctx()).expect("should produce an event");
 
     assert_eq!(event.id, "evt-1");
     assert_eq!(event.slot, 12345);
@@ -101,6 +101,25 @@ fn ingests_a_real_token_created_candidate_with_no_dangerous_extensions_into_a_cl
     assert!(snapshot.hard_blocks.is_empty());
 }
 
+/// A caller-supplied `creator_history_score` (from
+/// `momentum_reputation::CreatorLedger`, in the live pipeline) flows
+/// through into the event's payload unchanged — this function's job is
+/// only to place it, not to compute or validate it.
+#[test]
+fn a_supplied_creator_history_score_flows_through_into_the_event() {
+    let adapter = PumpAdapter::new("pump-layout-2026-08");
+    let candidate = adapter.decode(&decode_fixture(CREATE_B64)).expect("should decode");
+    let mint_flags = inspect_mint(&decode_fixture(REAL_MINT_B64)).unwrap();
+
+    let event = ingest_pump_token_created(&candidate, mint_flags, Some(0.75), &ctx()).expect("should produce an event");
+    match &event.payload {
+        EventPayload::TokenCreated { creator_history_score, .. } => {
+            assert_eq!(*creator_history_score, Some(0.75));
+        }
+        other => panic!("expected TokenCreated, got {other:?}"),
+    }
+}
+
 /// Each dangerous Token-2022 extension, checked one at a time through the
 /// real pipeline (ingest -> domain::Event -> risk_engine), not by asserting
 /// against `has_restricted_transfer_mechanism()`'s own logic in isolation.
@@ -125,7 +144,7 @@ fn every_dangerous_token2022_extension_independently_produces_a_hard_blocked_eve
     ];
 
     for flags in dangerous_variants {
-        let event = ingest_pump_token_created(&candidate, flags, &ctx()).unwrap();
+        let event = ingest_pump_token_created(&candidate, flags, None, &ctx()).unwrap();
         let mut state = ReplayState::new();
         let snapshot = apply_event(&mut state, &event, &DEFAULT_SCORING_CONFIG);
         assert_eq!(snapshot.hard_blocks, vec![HardBlock::RestrictedTransferMechanism], "flags {flags:?} should hard-block");
@@ -133,7 +152,7 @@ fn every_dangerous_token2022_extension_independently_produces_a_hard_blocked_eve
 
     // The absence of all five must NOT hard-block on this ground (other
     // hard blocks don't apply to this fixture either, so the list is empty).
-    let clean_event = ingest_pump_token_created(&candidate, MintExtensionFlags::default(), &ctx()).unwrap();
+    let clean_event = ingest_pump_token_created(&candidate, MintExtensionFlags::default(), None, &ctx()).unwrap();
     let mut state = ReplayState::new();
     let snapshot = apply_event(&mut state, &clean_event, &DEFAULT_SCORING_CONFIG);
     assert!(snapshot.hard_blocks.is_empty());
@@ -150,7 +169,7 @@ fn a_mint_owned_by_neither_known_token_program_is_flagged_unsupported() {
         *token_program = PUMP_PROGRAM_ID.parse().unwrap();
     }
 
-    let event = ingest_pump_token_created(&candidate, MintExtensionFlags::default(), &ctx()).unwrap();
+    let event = ingest_pump_token_created(&candidate, MintExtensionFlags::default(), None, &ctx()).unwrap();
     match event.payload {
         EventPayload::TokenCreated { unsupported_token_program, .. } => assert!(unsupported_token_program),
         other => panic!("expected TokenCreated, got {other:?}"),
@@ -174,5 +193,5 @@ fn a_trade_candidate_is_not_a_token_created_event() {
         creator: solana_pubkey::Pubkey::new_unique(),
     };
     let _ = adapter;
-    assert!(ingest_pump_token_created(&trade, momentum_token2022::MintExtensionFlags::default(), &ctx()).is_none());
+    assert!(ingest_pump_token_created(&trade, momentum_token2022::MintExtensionFlags::default(), None, &ctx()).is_none());
 }

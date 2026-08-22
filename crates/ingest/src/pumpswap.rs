@@ -39,10 +39,16 @@ fn sol_side(base_mint: &Pubkey, quote_mint: &Pubkey) -> Option<SolSide> {
 /// against — callers normally get it from
 /// `PumpSwapAdapter::pool(&candidate's pool address)`.
 ///
-/// `buyer_cluster_id`/`seller_cluster_id`/`buyer_quality` follow the same
-/// "wallet intelligence not built yet" placeholder convention as
-/// `pump::ingest_pump_trade` — see its doc comment.
-pub fn ingest_pumpswap_trade(candidate: &Candidate, pool: &Pool, sol_usd_price: f64, ctx: &EventContext) -> Option<Event> {
+/// `cluster_id`/`buyer_quality` follow the same caller-supplied convention
+/// as `pump::ingest_pump_trade` — see its doc comment.
+pub fn ingest_pumpswap_trade(
+    candidate: &Candidate,
+    pool: &Pool,
+    sol_usd_price: f64,
+    cluster_id: Option<String>,
+    buyer_quality: f64,
+    ctx: &EventContext,
+) -> Option<Event> {
     let Candidate::Trade { is_buy, base_amount, quote_amount, .. } = candidate else {
         return None;
     };
@@ -52,7 +58,7 @@ pub fn ingest_pumpswap_trade(candidate: &Candidate, pool: &Pool, sol_usd_price: 
         SolSide::Quote => (pool.base_mint, *quote_amount),
     };
     let amount_usd = lamports_to_usd(sol_amount, sol_usd_price)?;
-    let payload = buy_sell_payload(*is_buy, amount_usd);
+    let payload = buy_sell_payload(*is_buy, amount_usd, cluster_id, buyer_quality);
 
     Some(Event {
         id: ctx.id.clone(),

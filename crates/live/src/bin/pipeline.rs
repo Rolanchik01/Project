@@ -10,6 +10,20 @@
 //! `PoolCreated`/`LiquidityAdded`/`LiquidityRemoved`/`Graduation` events
 //! observed and scored end to end.
 //!
+//! `creator_history_score`/`buyer_cluster_id`/`buyer_quality`/
+//! `seller_cluster_id` (Group E — `momentum_reputation::CreatorLedger`/
+//! `TraderLedger`) are populated here too, not left `None` — see those
+//! types' module doc comments for what each represents and, importantly,
+//! what each deliberately does *not* attempt (a historical on-chain crawl
+//! for creators, a funding-source graph check for wallets) and why.
+//! Verified live: real repeat creators scored from this process's own
+//! observed history, and real same-slot co-buys on the same mint sharing a
+//! cluster id (`recordings/creator_ledger.ndjson`/`trader_ledger.ndjson`
+//! are this pipeline's own persisted fact logs, separate from
+//! `pipeline.ndjson` — see those types' `load`/persistence doc comments
+//! for why `core::domain::Event`'s own log can't be replayed to rebuild
+//! them).
+//!
 //! A mint's Token-2022 flags are fetched via a one-shot HTTPS
 //! `getAccountInfo` call (`momentum_live::rpc_fetch::fetch_account_with_retry`),
 //! not `accountSubscribe` — verified live that `accountSubscribe` delivers
@@ -51,7 +65,7 @@ use std::collections::HashMap;
 
 use momentum_core::adapter_contract::{AdapterRegistry, VenueAdapter};
 use momentum_core::dedup::StreamDeduplicator;
-use momentum_core::domain::ReplayState;
+use momentum_core::domain::{EventPayload, ReplayState};
 use momentum_core::recorder::NdjsonRecorder;
 use momentum_core::risk_engine;
 use momentum_core::scoring_config::DEFAULT_SCORING_CONFIG;
@@ -69,6 +83,7 @@ use momentum_pump::adapter::{Candidate as PumpCandidate, PumpAdapter};
 use momentum_pump::PUMP_PROGRAM_ID;
 use momentum_pumpswap::adapter::{Candidate as PumpSwapCandidate, PumpSwapAdapter};
 use momentum_pumpswap::PUMPSWAP_PROGRAM_ID;
+use momentum_reputation::{CreatorLedger, TraderLedger};
 use momentum_token2022::inspect_mint;
 use solana_pubkey::Pubkey;
 use tokio::sync::mpsc;
@@ -76,6 +91,8 @@ use tokio::sync::mpsc;
 const PROGRAM_VERSION: &str = "2026-08-stage1";
 const CHANNEL_CAPACITY: usize = 1024;
 const HTTP_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
+const CREATOR_LEDGER_PATH: &str = "recordings/creator_ledger.ndjson";
+const TRADER_LEDGER_PATH: &str = "recordings/trader_ledger.ndjson";
 /// See `rpc_fetch::fetch_account_with_retry`'s doc comment: clears the
 /// replica-lag race verified live between `logsSubscribe`'s WebSocket
 /// backend and whichever backend serves a given HTTP `getAccountInfo`
@@ -119,6 +136,17 @@ struct Pipeline {
     watch_tx: mpsc::Sender<WatchCommand>,
     http_client: reqwest::Client,
     mint_fetch_tx: mpsc::Sender<MintFetchResult>,
+    /// Creator/mint/pool history this process has itself observed — see
+    /// `momentum_reputation`'s crate doc comment for why it's built this
+    /// way instead of from a historical on-chain crawl. Persisted to
+    /// `CREATOR_LEDGER_PATH` and reloaded on startup, so reputation earned
+    /// in a previous run survives a restart.
+    creator_ledger: CreatorLedger,
+    /// Buyer/seller clustering and quality (Group E.2) — see
+    /// `momentum_reputation::wallet`'s module doc comment. Persisted to
+    /// `TRADER_LEDGER_PATH`; slot-clustering itself is not (see that
+    /// module's doc comment on `slot_clusters`).
+    trader_ledger: TraderLedger,
 }
 
 impl Pipeline {
@@ -130,7 +158,14 @@ impl Pipeline {
         if !self.dedup.admit(&event) {
             return;
         }
+        let is_token_created = matches!(event.payload, EventPayload::TokenCreated { .. });
         let snapshot = risk_engine::apply_event(&mut self.replay_state, &event, &DEFAULT_SCORING_CONFIG);
+        // Direct evidence against this mint's creator, independent of
+        // whether it ever reaches a PumpSwap pool — see
+        // `CreatorLedger::observe_hard_blocked`'s doc comment.
+        if is_token_created && !snapshot.hard_blocks.is_empty() {
+            self.creator_ledger.observe_hard_blocked(&event.mint);
+        }
         if let Err(e) = self.recorder.record(&event) {
             eprintln!("pipeline: failed to record event: {e}");
         }
@@ -174,7 +209,17 @@ impl Pipeline {
                 self.pending_token_created.insert(mint, (candidate, ctx));
                 self.spawn_mint_fetch(mint);
             }
-            PumpCandidate::Trade { mint, .. } => {
+            PumpCandidate::Trade { mint, user, is_buy, .. } => {
+                // Recorded into the wallet ledger unconditionally, before
+                // the cache/price checks below can drop this trade — a
+                // decoded Trade candidate is a real on-chain trade this
+                // wallet just made, whether or not this process's local
+                // bonding-curve cache or SOL/USD price happens to be warm
+                // yet. Same "we really observed this, independent of
+                // whether we can also score it" stance as
+                // `observe_creation` in `handle_mint_fetch_result`.
+                let (cluster_id, buyer_quality) = self.trader_ledger.observe_trade(&user.to_string(), &mint.to_string(), ctx.slot, *is_buy);
+
                 let curve_key = PumpAdapter::bonding_curve_pda(mint);
                 let Some(curve) = self.pump_adapter.curve(&curve_key) else {
                     eprintln!("pipeline: no cached bonding curve yet for mint {mint}, dropping trade");
@@ -184,7 +229,7 @@ impl Pipeline {
                     eprintln!("pipeline: no SOL/USD price yet, dropping Pump trade for {mint}");
                     return;
                 };
-                if let Some(event) = ingest_pump_trade(&candidate, curve, price, &ctx) {
+                if let Some(event) = ingest_pump_trade(&candidate, curve, price, Some(cluster_id), buyer_quality, &ctx) {
                     self.apply_and_record(event);
                 }
             }
@@ -207,11 +252,32 @@ impl Pipeline {
                     return;
                 };
                 if let Some(event) = ingest_pumpswap_pool_created(&candidate, price, &ctx) {
+                    // Links this mint to its pool in the creator ledger
+                    // before scoring, so a later drain on this exact pool
+                    // is attributable back to this mint's creator. Gated
+                    // on `sol_usd_price` being known (same as the event
+                    // itself) rather than duplicating `ingest_pumpswap_
+                    // pool_created`'s own SOL-side resolution — in
+                    // practice the price is already known well before any
+                    // real pool creation (it's watched from process
+                    // start), so this hasn't been observed to matter.
+                    self.creator_ledger.observe_pool_created(&event.mint, &pool.to_string());
                     self.apply_and_record(event);
                 }
             }
-            PumpSwapCandidate::Trade { pool, .. } => {
-                self.ingest_pumpswap_with_pool(pool, &ctx, ingest_pumpswap_trade, &candidate);
+            PumpSwapCandidate::Trade { pool, user, is_buy, .. } => {
+                // Keyed by pool address, not the tracked mint: which side
+                // of the pool is SOL isn't resolved until the pool's
+                // cached state is looked up inside ingest_pumpswap_trade,
+                // but a pool address is already a stable per-token
+                // identifier on its own (see TraderLedger's doc comment —
+                // it doesn't care what a "distinct instrument" key means
+                // beyond being distinct and stable). Recorded before
+                // handle_pumpswap_trade's own cache/price checks below,
+                // same "really happened, independent of whether we can
+                // also score it" stance as the Pump Trade arm above.
+                let (cluster_id, buyer_quality) = self.trader_ledger.observe_trade(&user.to_string(), &pool.to_string(), ctx.slot, *is_buy);
+                self.handle_pumpswap_trade(pool, &candidate, cluster_id, buyer_quality, &ctx);
             }
             PumpSwapCandidate::Deposit { pool, .. } => {
                 self.ingest_pumpswap_with_pool(pool, &ctx, ingest_pumpswap_deposit, &candidate);
@@ -219,6 +285,20 @@ impl Pipeline {
             PumpSwapCandidate::Withdraw { pool, .. } => {
                 self.ingest_pumpswap_with_pool(pool, &ctx, ingest_pumpswap_withdraw, &candidate);
             }
+        }
+    }
+
+    fn handle_pumpswap_trade(&mut self, pool_address: &Pubkey, candidate: &PumpSwapCandidate, cluster_id: String, buyer_quality: f64, ctx: &EventContext) {
+        let Some(pool) = self.pumpswap_adapter.pool(pool_address) else {
+            eprintln!("pipeline: no cached pool state yet for {pool_address}, dropping event");
+            return;
+        };
+        let Some(price) = self.sol_usd_price else {
+            eprintln!("pipeline: no SOL/USD price yet, dropping PumpSwap event for {pool_address}");
+            return;
+        };
+        if let Some(event) = ingest_pumpswap_trade(candidate, pool, price, Some(cluster_id), buyer_quality, ctx) {
+            self.apply_and_record(event);
         }
     }
 
@@ -238,6 +318,13 @@ impl Pipeline {
             return;
         };
         if let Some(event) = ingest(candidate, pool, price, ctx) {
+            // A real near-total drain is bad signal for this pool's mint's
+            // creator regardless of who executed the withdrawal (see
+            // `CreatorLedger`'s crate doc comment on why this doesn't try
+            // to attribute the withdrawer specifically).
+            if let EventPayload::LiquidityRemoved { all_liquidity_removed, .. } = &event.payload {
+                self.creator_ledger.observe_liquidity_removed(&pool_address.to_string(), *all_liquidity_removed);
+            }
             self.apply_and_record(event);
         }
     }
@@ -272,6 +359,19 @@ impl Pipeline {
 
     fn handle_mint_fetch_result(&mut self, result: MintFetchResult) {
         let Some((candidate, ctx)) = self.pending_token_created.remove(&result.mint) else { return };
+        let PumpCandidate::TokenCreated { creator, .. } = &candidate else {
+            // pending_token_created only ever holds TokenCreated candidates
+            // (see handle_pump_log's TokenCreated arm, the only inserter).
+            return;
+        };
+        // Recorded unconditionally, even if the fetch below fails or the
+        // mint doesn't parse: we definitely observed this creator's real
+        // on-chain CreateEvent for this mint, independent of whether we
+        // could also inspect the resulting Token-2022 flags. Exactly one
+        // call per mint, since pending_token_created.remove above ensures
+        // this runs at most once per mint.
+        let creator_history_score = self.creator_ledger.observe_creation(&creator.to_string(), &result.mint.to_string());
+
         let update = match result.outcome {
             Ok(update) => update,
             Err(e) => {
@@ -281,7 +381,7 @@ impl Pipeline {
         };
         match inspect_mint(&update.data) {
             Ok(flags) => {
-                if let Some(event) = ingest_pump_token_created(&candidate, flags, &ctx) {
+                if let Some(event) = ingest_pump_token_created(&candidate, flags, creator_history_score, &ctx) {
                     self.apply_and_record(event);
                 }
             }
@@ -299,6 +399,8 @@ fn now_ns() -> u64 {
 #[tokio::main]
 async fn main() {
     let recorder = NdjsonRecorder::new("recordings/pipeline.ndjson").expect("failed to create recordings directory");
+    let creator_ledger = CreatorLedger::load(CREATOR_LEDGER_PATH).expect("failed to load creator ledger");
+    let trader_ledger = TraderLedger::load(TRADER_LEDGER_PATH).expect("failed to load trader ledger");
     let registry = AdapterRegistry::new().register(momentum_core::domain::Venue::Pump, PROGRAM_VERSION).register(
         momentum_core::domain::Venue::PumpSwap,
         PROGRAM_VERSION,
@@ -335,6 +437,8 @@ async fn main() {
         watch_tx,
         http_client: reqwest::Client::new(),
         mint_fetch_tx,
+        creator_ledger,
+        trader_ledger,
     };
 
     eprintln!("pipeline: listening for live Pump + PumpSwap events, recording to recordings/pipeline.ndjson (ctrl-c to stop)...");

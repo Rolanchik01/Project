@@ -920,6 +920,7 @@ dependencies = [
  "momentum-ingest",
  "momentum-pump",
  "momentum-pumpswap",
+ "momentum-reputation",
  "momentum-token2022",
  "reqwest",
  "serde",
@@ -945,6 +946,14 @@ dependencies = [
  "base64 0.23.1",
  "momentum-core",
  "solana-pubkey 3.0.0",
+]
+
+[[package]]
+name = "momentum-reputation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

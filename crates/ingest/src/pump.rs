@@ -15,10 +15,34 @@ use crate::{is_known_token_program, EventContext};
 /// `Candidate` variant (`Trade`, `Graduated`) — those don't produce a
 /// `TokenCreated` event and aren't handled by this function.
 ///
-/// `creator_cluster_id`/`creator_history_score` are always `None` here —
-/// that's wallet-intelligence data (Stage 4), not something a single
-/// on-chain event carries.
-pub fn ingest_pump_token_created(candidate: &Candidate, mint_flags: MintExtensionFlags, ctx: &EventContext) -> Option<Event> {
+/// `creator_history_score` is supplied by the caller — normally
+/// `momentum_reputation::CreatorLedger::observe_creation(&candidate.creator,
+/// &candidate.mint)`, called *before* this function so the score reflects
+/// the creator's history up to but not including this new mint. `None`
+/// means this process has no observed history for this creator yet (its
+/// own first sighting of them), which the risk-engine already treats as
+/// "unknown creator" (`probe_entry`, sized down, not blocked) rather than
+/// an error.
+///
+/// `creator_cluster_id` is always `None` here, deliberately, not just
+/// "not built yet": `momentum_reputation::TraderLedger` (Group E.2) now
+/// clusters *buyer* wallets (same mint, same slot -> shared cluster),
+/// because `risk_engine::apply_event` actually reads `buyer_cluster_id`/
+/// `buyer_quality` into its `strong_clusters` count. `token.creator.
+/// cluster_id` is stored by `risk_engine::apply_event` too, but nothing in
+/// its scoring formula ever *reads* it back (verified by grepping
+/// `risk_engine.rs`: `creator_score` is computed from `history_score`
+/// alone) — populating it today would be speculative funding-source-graph
+/// work (the same category of expensive, unverified analysis Group E.2's
+/// module doc comment declined for buyer wallets) feeding a score that
+/// provably can't change as a result. Revisit once `risk_engine` actually
+/// consumes it.
+pub fn ingest_pump_token_created(
+    candidate: &Candidate,
+    mint_flags: MintExtensionFlags,
+    creator_history_score: Option<f64>,
+    ctx: &EventContext,
+) -> Option<Event> {
     let Candidate::TokenCreated { mint, token_program, .. } = candidate else {
         return None;
     };
@@ -34,7 +58,7 @@ pub fn ingest_pump_token_created(candidate: &Candidate, mint_flags: MintExtensio
         mint: mint.to_string(),
         payload: EventPayload::TokenCreated {
             creator_cluster_id: None,
-            creator_history_score: None,
+            creator_history_score,
             mint_authority_active: mint_flags.mint_authority_active,
             freeze_authority_active: mint_flags.freeze_authority_active,
             transfer_hook: mint_flags.transfer_hook,
@@ -56,13 +80,21 @@ pub fn ingest_pump_token_created(candidate: &Candidate, mint_flags: MintExtensio
 /// as USD. Also refuses if `sol_usd_price` isn't a sane positive number
 /// (see `price::lamports_to_usd`).
 ///
-/// `buyer_cluster_id`/`seller_cluster_id` are always `None` and
-/// `buyer_quality` is always `0.0` — wallet intelligence (Stage 4) doesn't
-/// exist yet. `risk_engine::apply_event` only reads `buyer_quality` inside
-/// its `Some(cluster_id)` branch, so leaving the cluster id `None` makes
-/// this placeholder value inert rather than a fabricated signal feeding
-/// the demand score.
-pub fn ingest_pump_trade(candidate: &Candidate, curve: &BondingCurve, sol_usd_price: f64, ctx: &EventContext) -> Option<Event> {
+/// `cluster_id`/`buyer_quality` are supplied by the caller — normally
+/// `momentum_reputation::TraderLedger::observe_trade(&candidate.user, ...)`,
+/// called before this function (Group E.2). `risk_engine::apply_event`
+/// only reads `buyer_quality` inside its `Some(cluster_id)` branch, so
+/// passing `None` makes `buyer_quality` inert rather than a fabricated
+/// signal feeding the demand score — same contract as before this was
+/// wired up, just no longer hardcoded here.
+pub fn ingest_pump_trade(
+    candidate: &Candidate,
+    curve: &BondingCurve,
+    sol_usd_price: f64,
+    cluster_id: Option<String>,
+    buyer_quality: f64,
+    ctx: &EventContext,
+) -> Option<Event> {
     let Candidate::Trade { mint, is_buy, quote_amount, .. } = candidate else {
         return None;
     };
@@ -70,7 +102,7 @@ pub fn ingest_pump_trade(candidate: &Candidate, curve: &BondingCurve, sol_usd_pr
         return None;
     }
     let amount_usd = lamports_to_usd(*quote_amount, sol_usd_price)?;
-    let payload = buy_sell_payload(*is_buy, amount_usd);
+    let payload = buy_sell_payload(*is_buy, amount_usd, cluster_id, buyer_quality);
 
     Some(Event {
         id: ctx.id.clone(),

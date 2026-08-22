@@ -39,7 +39,7 @@ fn converts_a_real_buy_trades_lamport_amount_to_usd_at_a_given_price() {
     let candidate = adapter.decode(&decode_fixture(BUY_TRADE_B64)).expect("should decode");
     let curve = BondingCurve::decode(&decode_fixture(REAL_FRESH_CURVE_B64)).unwrap();
 
-    let event = ingest_pump_trade(&candidate, &curve, 150.0, &ctx()).expect("should produce an event");
+    let event = ingest_pump_trade(&candidate, &curve, 150.0, None, 0.0, &ctx()).expect("should produce an event");
 
     assert_eq!(event.venue, Venue::Pump);
     assert_eq!(event.mint, "3xM2iMg4RZBuzdFpvwYab9cUaVpniuHgLUZRg33ipump");
@@ -58,6 +58,25 @@ fn converts_a_real_buy_trades_lamport_amount_to_usd_at_a_given_price() {
     }
 }
 
+/// A caller-supplied `(cluster_id, buyer_quality)` (from
+/// `momentum_reputation::TraderLedger::observe_trade`, in the live
+/// pipeline) flows through into the event's payload unchanged.
+#[test]
+fn a_supplied_cluster_id_and_quality_flow_through_into_the_event() {
+    let adapter = PumpAdapter::new("pump-layout-2026-08");
+    let candidate = adapter.decode(&decode_fixture(BUY_TRADE_B64)).expect("should decode");
+    let curve = BondingCurve::decode(&decode_fixture(REAL_FRESH_CURVE_B64)).unwrap();
+
+    let event = ingest_pump_trade(&candidate, &curve, 150.0, Some("cluster-xyz".to_string()), 0.9, &ctx()).expect("should produce an event");
+    match event.payload {
+        EventPayload::Buy { buyer_cluster_id, buyer_quality, .. } => {
+            assert_eq!(buyer_cluster_id, Some("cluster-xyz".to_string()));
+            assert_eq!(buyer_quality, 0.9);
+        }
+        other => panic!("expected Buy, got {other:?}"),
+    }
+}
+
 #[test]
 fn refuses_to_convert_a_trade_on_a_non_sol_quoted_curve() {
     let adapter = PumpAdapter::new("pump-layout-2026-08");
@@ -65,7 +84,7 @@ fn refuses_to_convert_a_trade_on_a_non_sol_quoted_curve() {
     let mut curve = BondingCurve::decode(&decode_fixture(REAL_FRESH_CURVE_B64)).unwrap();
     curve.quote_mint = Pubkey::new_unique();
 
-    assert!(ingest_pump_trade(&candidate, &curve, 150.0, &ctx()).is_none());
+    assert!(ingest_pump_trade(&candidate, &curve, 150.0, None, 0.0, &ctx()).is_none());
 }
 
 #[test]
@@ -74,9 +93,9 @@ fn refuses_a_non_finite_or_negative_price_rather_than_producing_garbage_usd() {
     let candidate = adapter.decode(&decode_fixture(BUY_TRADE_B64)).expect("should decode");
     let curve = BondingCurve::decode(&decode_fixture(REAL_FRESH_CURVE_B64)).unwrap();
 
-    assert!(ingest_pump_trade(&candidate, &curve, f64::NAN, &ctx()).is_none());
-    assert!(ingest_pump_trade(&candidate, &curve, f64::INFINITY, &ctx()).is_none());
-    assert!(ingest_pump_trade(&candidate, &curve, -1.0, &ctx()).is_none());
+    assert!(ingest_pump_trade(&candidate, &curve, f64::NAN, None, 0.0, &ctx()).is_none());
+    assert!(ingest_pump_trade(&candidate, &curve, f64::INFINITY, None, 0.0, &ctx()).is_none());
+    assert!(ingest_pump_trade(&candidate, &curve, -1.0, None, 0.0, &ctx()).is_none());
 }
 
 #[test]
@@ -111,6 +130,6 @@ fn a_token_created_candidate_is_not_a_trade_or_graduation() {
         quote_mint: Pubkey::new_unique(),
     };
     let curve = BondingCurve::decode(&decode_fixture(REAL_FRESH_CURVE_B64)).unwrap();
-    assert!(ingest_pump_trade(&candidate, &curve, 150.0, &ctx()).is_none());
+    assert!(ingest_pump_trade(&candidate, &curve, 150.0, None, 0.0, &ctx()).is_none());
     assert!(ingest_pump_graduated(&candidate, &ctx()).is_none());
 }
