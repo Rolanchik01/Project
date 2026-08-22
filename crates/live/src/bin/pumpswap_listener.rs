@@ -2,8 +2,8 @@
 //! PumpSwap's program instead. Proves `momentum_live`'s listener works
 //! unchanged for a second venue — `listener::run` doesn't know or care
 //! which program it's watching. Not a production entrypoint — see
-//! `crates/live/src/lib.rs` doc comment for what's deliberately not built
-//! yet (accountSubscribe, ingest/risk-engine/recorder wiring).
+//! `bin/pipeline.rs` for the full accountSubscribe + ingest/risk-engine/
+//! recorder pipeline.
 
 use momentum_live::listener::{run, ListenerConfig, EVENT_CHANNEL_CAPACITY};
 use momentum_pumpswap::events::{decode_event, PumpSwapEvent};
@@ -35,6 +35,12 @@ async fn main() {
                     }
                     Some(PumpSwapEvent::Sell(s)) => {
                         println!("[{}] SELL pool={} base_amount_in={} quote_amount_out={}", raw.signature, s.pool, s.base_amount_in, s.user_quote_amount_out);
+                    }
+                    Some(PumpSwapEvent::Deposit(d)) => {
+                        println!("[{}] DEPOSIT pool={} base_amount_in={} quote_amount_in={}", raw.signature, d.pool, d.base_amount_in, d.quote_amount_in);
+                    }
+                    Some(PumpSwapEvent::Withdraw(w)) => {
+                        println!("[{}] WITHDRAW pool={} base_amount_out={} quote_amount_out={}", raw.signature, w.pool, w.base_amount_out, w.quote_amount_out);
                     }
                     None => {}
                 }

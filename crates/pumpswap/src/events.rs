@@ -1,6 +1,6 @@
 //! PumpSwap's Anchor self-CPI event log decoding: `CreatePoolEvent`,
-//! `BuyEvent`, `SellEvent`. Field order and discriminators come from the
-//! vendored IDL (`idl/pump_amm.json`).
+//! `BuyEvent`, `SellEvent`, `WithdrawEvent`, `DepositEvent`. Field order
+//! and discriminators come from the vendored IDL (`idl/pump_amm.json`).
 //!
 //! `BuyEvent` and `SellEvent` are verified byte-for-byte against real
 //! mainnet transactions on non-boosted pools — see `tests/events_test.rs`.
@@ -24,6 +24,8 @@ use solana_pubkey::Pubkey;
 const CREATE_POOL_EVENT_DISCRIMINATOR: [u8; 8] = [177, 49, 12, 210, 160, 118, 167, 116];
 const BUY_EVENT_DISCRIMINATOR: [u8; 8] = [103, 244, 82, 31, 44, 245, 119, 119];
 const SELL_EVENT_DISCRIMINATOR: [u8; 8] = [62, 47, 55, 10, 165, 3, 220, 42];
+const WITHDRAW_EVENT_DISCRIMINATOR: [u8; 8] = [22, 9, 133, 26, 160, 44, 71, 192];
+const DEPOSIT_EVENT_DISCRIMINATOR: [u8; 8] = [120, 248, 61, 83, 31, 142, 107, 144];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatePoolEvent {
@@ -71,11 +73,69 @@ pub struct SellEvent {
     pub can_boost: bool,
 }
 
+/// A liquidity withdrawal (LP token burn -> base+quote out). Field order
+/// verified byte-for-byte against a real mainnet withdrawal — see
+/// `tests/events_test.rs` — and, unlike `BuyEvent`/`SellEvent`, matches the
+/// vendored IDL's declared field list and order exactly (every byte
+/// consumed, nothing left over).
+///
+/// `pool_base_token_reserves`/`pool_quote_token_reserves` follow the same
+/// pre-instruction convention confirmed for `BuyEvent`/`SellEvent`: the
+/// real withdrawal observed here had `base_amount_out` almost exactly
+/// equal to `pool_base_token_reserves` (off by single-digit dust), meaning
+/// those reserves are the pool's state *before* this withdrawal drained
+/// nearly all of it — not after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithdrawEvent {
+    pub pool: Pubkey,
+    pub user: Pubkey,
+    pub lp_token_amount_in: u64,
+    pub pool_base_token_reserves: u64,
+    pub pool_quote_token_reserves: u64,
+    pub base_amount_out: u64,
+    pub quote_amount_out: u64,
+    /// The LP mint's total supply *before* this withdrawal burns
+    /// `lp_token_amount_in` of it — confirmed against a real withdrawal
+    /// that burned all but 100 raw units of this exact value, matching
+    /// `base_amount_out` draining nearly all of `pool_base_token_reserves`
+    /// in the same event.
+    pub lp_mint_supply: u64,
+}
+
+/// A liquidity deposit (base+quote in -> LP token mint). Field order
+/// verified byte-for-byte against a real mainnet deposit — see
+/// `tests/events_test.rs` — and matches the vendored IDL's declared field
+/// list and order exactly, same as `WithdrawEvent`.
+///
+/// A second, much shorter (105-byte, vs. this layout's 248) raw event was
+/// also observed live under the same discriminator, bundled in the same
+/// transaction as a `SellEvent` — almost certainly a genuine alternate
+/// `DepositEvent` shape from a "sell then deposit" code path with some
+/// fields serialized as absent (Borsh `Option<T>::None`) rather than a
+/// different event type entirely (a stray byte between two of its pubkeys
+/// decoded exactly as a Borsh `Some` tag). `decode_deposit` only handles
+/// the full shape below and returns `None` for that shorter one — refusing
+/// to guess at a layout not yet confirmed, the same fail-closed stance
+/// this crate already takes for boosted/mayhem pools it can't price.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepositEvent {
+    pub pool: Pubkey,
+    pub user: Pubkey,
+    pub lp_token_amount_out: u64,
+    pub pool_base_token_reserves: u64,
+    pub pool_quote_token_reserves: u64,
+    pub base_amount_in: u64,
+    pub quote_amount_in: u64,
+    pub lp_mint_supply: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PumpSwapEvent {
     CreatePool(CreatePoolEvent),
     Buy(BuyEvent),
     Sell(SellEvent),
+    Withdraw(WithdrawEvent),
+    Deposit(DepositEvent),
 }
 
 /// Decodes one Anchor self-CPI event log (8-byte discriminator + payload).
@@ -91,6 +151,8 @@ pub fn decode_event(data: &[u8]) -> Option<PumpSwapEvent> {
         d if d == CREATE_POOL_EVENT_DISCRIMINATOR => decode_create_pool(body).map(PumpSwapEvent::CreatePool),
         d if d == BUY_EVENT_DISCRIMINATOR => decode_buy(body).map(PumpSwapEvent::Buy),
         d if d == SELL_EVENT_DISCRIMINATOR => decode_sell(body).map(PumpSwapEvent::Sell),
+        d if d == WITHDRAW_EVENT_DISCRIMINATOR => decode_withdraw(body).map(PumpSwapEvent::Withdraw),
+        d if d == DEPOSIT_EVENT_DISCRIMINATOR => decode_deposit(body).map(PumpSwapEvent::Deposit),
         _ => None,
     }
 }
@@ -322,5 +384,67 @@ fn decode_sell(body: &[u8]) -> Option<SellEvent> {
         coin_creator_fee,
         virtual_quote_reserves,
         can_boost,
+    })
+}
+
+fn decode_withdraw(body: &[u8]) -> Option<WithdrawEvent> {
+    let mut r = Reader::new(body);
+    let _timestamp = r.i64()?;
+    let lp_token_amount_in = r.u64()?;
+    let _min_base_amount_out = r.u64()?;
+    let _min_quote_amount_out = r.u64()?;
+    let _user_base_token_reserves = r.u64()?;
+    let _user_quote_token_reserves = r.u64()?;
+    let pool_base_token_reserves = r.u64()?;
+    let pool_quote_token_reserves = r.u64()?;
+    let base_amount_out = r.u64()?;
+    let quote_amount_out = r.u64()?;
+    let lp_mint_supply = r.u64()?;
+    let pool = r.pubkey()?;
+    let user = r.pubkey()?;
+    let _user_base_token_account = r.pubkey()?;
+    let _user_quote_token_account = r.pubkey()?;
+    let _user_pool_token_account = r.pubkey()?;
+
+    Some(WithdrawEvent {
+        pool,
+        user,
+        lp_token_amount_in,
+        pool_base_token_reserves,
+        pool_quote_token_reserves,
+        base_amount_out,
+        quote_amount_out,
+        lp_mint_supply,
+    })
+}
+
+fn decode_deposit(body: &[u8]) -> Option<DepositEvent> {
+    let mut r = Reader::new(body);
+    let _timestamp = r.i64()?;
+    let lp_token_amount_out = r.u64()?;
+    let _max_base_amount_in = r.u64()?;
+    let _max_quote_amount_in = r.u64()?;
+    let _user_base_token_reserves = r.u64()?;
+    let _user_quote_token_reserves = r.u64()?;
+    let pool_base_token_reserves = r.u64()?;
+    let pool_quote_token_reserves = r.u64()?;
+    let base_amount_in = r.u64()?;
+    let quote_amount_in = r.u64()?;
+    let lp_mint_supply = r.u64()?;
+    let pool = r.pubkey()?;
+    let user = r.pubkey()?;
+    let _user_base_token_account = r.pubkey()?;
+    let _user_quote_token_account = r.pubkey()?;
+    let _user_pool_token_account = r.pubkey()?;
+
+    Some(DepositEvent {
+        pool,
+        user,
+        lp_token_amount_out,
+        pool_base_token_reserves,
+        pool_quote_token_reserves,
+        base_amount_in,
+        quote_amount_in,
+        lp_mint_supply,
     })
 }

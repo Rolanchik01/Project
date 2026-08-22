@@ -6,11 +6,17 @@
 //! `crates/ingest/src/pumpswap.rs` module docs for why that assumption
 //! would have been wrong: roughly half of ~20 sampled real pools have SOL
 //! as base, half as quote).
+//!
+//! `ingest_pumpswap_deposit`/`ingest_pumpswap_withdraw` are tested against
+//! real `Candidate::Deposit`/`Candidate::Withdraw` (decoded from the same
+//! byte-verified fixtures as `crates/pumpswap/tests/events_test.rs`) paired
+//! with the real `Pool` account each one actually acted on, fetched fresh
+//! from mainnet — not synthetic amounts on an arbitrary pool.
 
 use base64::Engine;
 use momentum_core::adapter_contract::VenueAdapter;
 use momentum_core::domain::{EventPayload, Venue};
-use momentum_ingest::{ingest_pumpswap_pool_created, ingest_pumpswap_trade, EventContext};
+use momentum_ingest::{ingest_pumpswap_deposit, ingest_pumpswap_pool_created, ingest_pumpswap_trade, ingest_pumpswap_withdraw, EventContext};
 use momentum_pumpswap::adapter::{Candidate, PumpSwapAdapter};
 use momentum_pumpswap::Pool;
 use solana_pubkey::Pubkey;
@@ -36,6 +42,20 @@ const SOL_AS_QUOTE_POOL_B64: &str = "8ZptBBGxbbz/AACOMWqt1JkzdiiGlEd7PgG/aPSwiEJ
 /// USDC quote_mint) — proves the refusal is real-data-driven, not just a
 /// synthetic Pubkey::new_unique() that happens not to match.
 const NEITHER_SOL_POOL_B64: &str = "8ZptBBGxbbz/AABpSCuXTUHDQ3gFgU04wl4PagpX68RBkzP/+IxZNkXj8QRQo0xtm2P7amaPMYZ7uvZTO2bq+9JI6QLz77lSMB6vxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWHrix/mTUdEYuarjyAGkmLqtALkq2llVkgybr8jiBp1BMF4WNyfG3RbhuuXo4CZM0QPcbhtrmVJvaR7LP4hJ5CP6k2eYjE7rnzQZlVwEQhn34jUSNmCJ0/1/ksk75xSR4xpeBVUcQEAABzkxmA/6NwQ1yiO7VX722OenLFb/dbTK9pLh3iWpFVsAAB0LPqVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
+/// The real `Pool` account for the pool the DEPOSIT fixture below acted
+/// on (base_mint = wrapped SOL), fetched fresh alongside it.
+const DEPOSIT_POOL_B64: &str = "8ZptBBGxbbz/AAC/QBdIUxbev9YUjqy5/LWQEqzCvYhldw06ICYPCxqKTAabiFf+q4GE+2h/Y0YYwDXaxDncGus7VZig8AAAAAABADE1CSUPQirWB+aTSnscgniPRqGBNDhiChKXeLy3yHhsAybg/ptLk8lzTLlnauVXkZMnfRxspfh8twvbiTfYuV4JX+5fMNJvvedhDtkmECNMJohanFjiwxIl04psbyPEGG+UVh6R+r+2mYr0h57xmpCHE6J8x6tXRE7paDDyT58lCzq7qRsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+/// Real `DepositEvent` on that pool, already byte-verified in
+/// `crates/pumpswap/tests/events_test.rs::DEPOSIT_B64`.
+const DEPOSIT_EVENT_B64: &str = "ePg9Ux+Oa5ARbYlqAAAAAJYx+goAAAAAoDegAAAAAAAmUUo5BgAAAKA3oAAAAAAAoO7p6p+aAwAPdq7cgAEAADcGZssN7w4AGbmYAAAAAABGtRXtBQAAAI/ZP7CpGwAAI0SNLcdUU0SYKEnd/8EpJqykaqmbVg36WJTlfthnEie/QBdIUxbev9YUjqy5/LWQEqzCvYhldw06ICYPCxqKTL8fc2RWVI81yPJkto5cbkXnoZidyI6ztikyQz+ID9HJ18APw0jIACyS74uch2G4SBVPdeawhLdBuMY/VZkerQRSor+xxqfdOenryzLU3epnPz85zkG0FtidPNdloAKDCA==";
+
+/// The real `Pool` account for the pool the WITHDRAW fixture below acted
+/// on (base_mint = wrapped SOL), fetched fresh alongside it.
+const WITHDRAW_POOL_B64: &str = "8ZptBBGxbbz9AABvqQ650oQopAr8jThZ0ep6WRY+sA5fx0BNKfJRXuPFMAabiFf+q4GE+2h/Y0YYwDXaxDncGus7VZig8AAAAAABC0PU/D6U+gTsRQyfQfvt6nf9/jv/84nxxa8q7H6eVMAXOsbc7SeM16FeqqMwnbO0HiuWc3bbibnV2J9ZywFSjG5VFq2u0NiXgiOqJZKVxqpOIRu1u/W91RIKqhZ+Ujmj+UlYMsh2YB/QwhNk9G2MllA/RJQ1l7cLrtan7jfZIX5kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+/// Real `WithdrawEvent` on that pool, already byte-verified in
+/// `crates/pumpswap/tests/events_test.rs::WITHDRAW_B64`.
+const WITHDRAW_EVENT_B64: &str = "FgmFGqAsR8Cva4lqAAAAAHQqEQNoAgAAVAR3PQAAAACzRAuyqAAAAAAAAAAAAAAAAAAAAAAAAACP2A8CGAAAAOIVqLrmQQAAi9gPAhgAAAAvC6i65kEAANgqEQNoAgAAsPVS+OjVGIRWr8xyIA1mXmnNi0XgdyqWG21OAdOSkXNvqQ650oQopAr8jThZ0ep6WRY+sA5fx0BNKfJRXuPFMNq/Aq8B1ATQ/4gN4p23vatmsQM4iZQjJaiLGC1xtQTau8XxTkZZb1Vxzo7jJ+bVWMhovQAE8jaCSo7oV4O1z13alI4FZFp0SA1/sd789lLyoLdXN7FPTpzTKG4hRTAqAg==";
 
 fn decode_fixture(b64: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
@@ -196,4 +216,88 @@ fn a_trade_candidate_is_not_a_pool_created_event() {
         can_boost: false,
     };
     assert!(ingest_pumpswap_pool_created(&candidate, 150.0, &ctx()).is_none());
+}
+
+#[test]
+fn a_real_deposit_produces_a_liquidity_added_event_valuing_the_sol_side() {
+    let adapter = PumpSwapAdapter::new("pumpswap-layout-2026-08");
+    let candidate = adapter.decode(&decode_fixture(DEPOSIT_EVENT_B64)).expect("should decode");
+    let pool = Pool::decode(&decode_fixture(DEPOSIT_POOL_B64)).unwrap();
+    assert_eq!(pool.base_mint, Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap());
+
+    let event = ingest_pumpswap_deposit(&candidate, &pool, 150.0, &ctx()).expect("should produce an event");
+    assert_eq!(event.venue, Venue::PumpSwap);
+    assert_eq!(event.mint, pool.quote_mint.to_string());
+    match event.payload {
+        EventPayload::LiquidityAdded { pool_id, amount_usd } => {
+            assert_eq!(pool_id, "3Nfu1VWsoUbRwS9sXmMLzGJfVp2dWHf6Xw75JoSvvwZQ");
+            // Real base_amount_in for this deposit: 10,008,857 lamports
+            // (verified exactly in crates/pumpswap/tests/events_test.rs).
+            let expected = 10_008_857.0 / 1_000_000_000.0 * 150.0;
+            assert!((amount_usd - expected).abs() < 1e-9, "{amount_usd} vs {expected}");
+        }
+        other => panic!("expected LiquidityAdded, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_trade_candidate_is_not_a_deposit_event() {
+    let candidate = Candidate::Trade {
+        pool: Pubkey::new_unique(),
+        user: Pubkey::new_unique(),
+        is_buy: true,
+        base_amount: 1,
+        quote_amount: 1,
+        lp_fee: 0,
+        protocol_fee: 0,
+        coin_creator: Pubkey::new_unique(),
+        coin_creator_fee: 0,
+        can_boost: false,
+    };
+    let pool = Pool::decode(&decode_fixture(DEPOSIT_POOL_B64)).unwrap();
+    assert!(ingest_pumpswap_deposit(&candidate, &pool, 150.0, &ctx()).is_none());
+}
+
+#[test]
+fn a_real_withdrawal_that_drains_the_pool_produces_a_liquidity_removed_event_marked_fully_removed() {
+    let adapter = PumpSwapAdapter::new("pumpswap-layout-2026-08");
+    let candidate = adapter.decode(&decode_fixture(WITHDRAW_EVENT_B64)).expect("should decode");
+    let pool = Pool::decode(&decode_fixture(WITHDRAW_POOL_B64)).unwrap();
+    assert_eq!(pool.base_mint, Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap());
+
+    let event = ingest_pumpswap_withdraw(&candidate, &pool, 150.0, &ctx()).expect("should produce an event");
+    assert_eq!(event.venue, Venue::PumpSwap);
+    assert_eq!(event.mint, pool.quote_mint.to_string());
+    match event.payload {
+        EventPayload::LiquidityRemoved { pool_id, amount_usd, all_liquidity_removed } => {
+            assert_eq!(pool_id, "CumioQrRqWyLv2Xdge2aFVgTgVrBZuF7y2PNTuDQfhXg");
+            // Real base_amount_out for this withdrawal: 103,113,808,011
+            // lamports (verified exactly in crates/pumpswap/tests/events_test.rs).
+            let expected = 103_113_808_011.0 / 1_000_000_000.0 * 150.0;
+            assert!((amount_usd - expected).abs() < 1e-6, "{amount_usd} vs {expected}");
+            // This real withdrawal burned all but 100 raw units of the
+            // pre-withdrawal LP supply — a near-total drain, correctly
+            // flagged as "all liquidity removed".
+            assert!(all_liquidity_removed);
+        }
+        other => panic!("expected LiquidityRemoved, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_trade_candidate_is_not_a_withdraw_event() {
+    let candidate = Candidate::Trade {
+        pool: Pubkey::new_unique(),
+        user: Pubkey::new_unique(),
+        is_buy: true,
+        base_amount: 1,
+        quote_amount: 1,
+        lp_fee: 0,
+        protocol_fee: 0,
+        coin_creator: Pubkey::new_unique(),
+        coin_creator_fee: 0,
+        can_boost: false,
+    };
+    let pool = Pool::decode(&decode_fixture(WITHDRAW_POOL_B64)).unwrap();
+    assert!(ingest_pumpswap_withdraw(&candidate, &pool, 150.0, &ctx()).is_none());
 }

@@ -32,6 +32,7 @@ fn extracts_the_single_real_event_from_a_plain_trade_notification() {
         "2SXAxsRfoXto8ayGbuAgENNtzex3sP4UmFE67fj6WDGWhoDbt81RXVG5a1VodztfCx9ukHFxmJX6Q38iUUdKgzcY"
     );
     assert_eq!(extracted.events[0].log_index, 0);
+    assert_eq!(extracted.events[0].slot, 440_741_846);
 
     match decode_event(&extracted.events[0].data).expect("should decode as a known Pump event") {
         PumpEvent::Trade(t) => assert!(t.is_buy),

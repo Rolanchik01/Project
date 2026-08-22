@@ -3,8 +3,7 @@
 //! event as it happens. Proves `momentum_live`'s listener + `momentum_pump`'s
 //! already-tested decoder work together against the live chain, not just
 //! against captured fixtures. Not a production entrypoint — no recorder,
-//! no risk-engine wiring (see `crates/live/src/lib.rs` doc comment for
-//! what's deliberately not built yet).
+//! no risk-engine wiring (see `bin/pipeline.rs` for that).
 
 use momentum_live::listener::{run, ListenerConfig, EVENT_CHANNEL_CAPACITY};
 use momentum_pump::events::{decode_event, PumpEvent};

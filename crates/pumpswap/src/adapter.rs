@@ -51,6 +51,27 @@ pub enum Candidate {
         coin_creator_fee: u64,
         can_boost: bool,
     },
+    Withdraw {
+        pool: Pubkey,
+        user: Pubkey,
+        lp_token_amount_in: u64,
+        base_amount_out: u64,
+        quote_amount_out: u64,
+        /// The LP mint's total supply *before* this withdrawal — see
+        /// `events::WithdrawEvent` doc comment. PumpSwap permanently locks
+        /// a small fixed amount of LP supply at pool creation (see
+        /// `momentum_ingest::pumpswap::PERMANENTLY_LOCKED_MINIMUM_LIQUIDITY`),
+        /// so callers determining "all liquidity removed" must compare
+        /// against that floor, not a bare `lp_token_amount_in >=
+        /// lp_mint_supply`.
+        lp_mint_supply: u64,
+    },
+    Deposit {
+        pool: Pubkey,
+        user: Pubkey,
+        base_amount_in: u64,
+        quote_amount_in: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +213,17 @@ impl VenueAdapter for PumpSwapAdapter {
                 coin_creator_fee: s.coin_creator_fee,
                 can_boost: s.can_boost,
             }),
+            PumpSwapEvent::Withdraw(w) => Some(Candidate::Withdraw {
+                pool: w.pool,
+                user: w.user,
+                lp_token_amount_in: w.lp_token_amount_in,
+                base_amount_out: w.base_amount_out,
+                quote_amount_out: w.quote_amount_out,
+                lp_mint_supply: w.lp_mint_supply,
+            }),
+            PumpSwapEvent::Deposit(d) => {
+                Some(Candidate::Deposit { pool: d.pool, user: d.user, base_amount_in: d.base_amount_in, quote_amount_in: d.quote_amount_in })
+            }
         }
     }
 

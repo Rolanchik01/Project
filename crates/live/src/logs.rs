@@ -18,7 +18,13 @@ struct LogsParams {
 
 #[derive(Debug, Deserialize)]
 struct LogsResult {
+    context: LogsContext,
     value: LogsValue,
+}
+
+#[derive(Debug, Deserialize)]
+struct LogsContext {
+    slot: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +46,7 @@ struct LogsValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawLogEvent {
     pub signature: String,
+    pub slot: u64,
     pub log_index: u32,
     pub data: Vec<u8>,
 }
@@ -76,6 +83,7 @@ pub struct ExtractedEvents {
 /// subscribe confirmation/error separately, before it ever calls this.
 pub fn extract_events(raw: &str) -> Option<ExtractedEvents> {
     let notification: LogsNotification = serde_json::from_str(raw).ok()?;
+    let slot = notification.params.result.context.slot;
     let value = notification.params.result.value;
     if value.err.is_some() {
         return Some(ExtractedEvents::default());
@@ -86,7 +94,7 @@ pub fn extract_events(raw: &str) -> Option<ExtractedEvents> {
             match base64::engine::general_purpose::STANDARD.decode(b64) {
                 Ok(data) => {
                     let log_index = result.events.len() as u32;
-                    result.events.push(RawLogEvent { signature: value.signature.clone(), log_index, data });
+                    result.events.push(RawLogEvent { signature: value.signature.clone(), slot, log_index, data });
                 }
                 Err(_) => result.skipped_malformed += 1,
             }

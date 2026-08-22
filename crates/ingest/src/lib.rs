@@ -7,12 +7,15 @@
 //!
 //! - `pump` — Pump's three candidates: `TokenCreated` (the anti-rug-critical
 //!   path), `Trade` -> `Buy`/`Sell`, `Graduated` -> `Graduation`.
-//! - `pumpswap` — PumpSwap's `Trade` -> `Buy`/`Sell` and `PoolCreated`.
+//! - `pumpswap` — PumpSwap's `Trade` -> `Buy`/`Sell`, `PoolCreated`,
+//!   `Deposit` -> `LiquidityAdded`, `Withdraw` -> `LiquidityRemoved`.
 //! - `price` — the SOL/USD lamport conversion both venues' trade/liquidity
-//!   ingestion share. It does not fetch a price; callers supply
-//!   `sol_usd_price` from wherever the live ingestion driver gets one — no
-//!   price source has been chosen or verified yet, so fetching one isn't
-//!   built here rather than invented.
+//!   ingestion share. It does not fetch a price itself; callers supply
+//!   `sol_usd_price` from wherever the live ingestion driver gets one.
+//! - `price_feed` — that source: decodes Pyth's on-chain SOL/USD
+//!   `PriceUpdateV2` account (read live via `crates/live`'s
+//!   `accountSubscribe`), the `sol_usd_price` callers of `price` are
+//!   expected to supply.
 //!
 //! One `Candidate::TokenCreated` produces exactly **one** `Event`, not two.
 //! An earlier draft of this module also emitted a `CurveCreated` marker
@@ -42,11 +45,12 @@
 //! glue exists before this crate).
 
 pub mod price;
+pub mod price_feed;
 pub mod pump;
 pub mod pumpswap;
 
 pub use pump::{ingest_pump_graduated, ingest_pump_token_created, ingest_pump_trade};
-pub use pumpswap::{ingest_pumpswap_pool_created, ingest_pumpswap_trade};
+pub use pumpswap::{ingest_pumpswap_deposit, ingest_pumpswap_pool_created, ingest_pumpswap_trade, ingest_pumpswap_withdraw};
 
 use solana_pubkey::Pubkey;
 
